@@ -23,25 +23,26 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 
 data class ProfileState(
     val fullName: String, val siteName: String, val siteUrl: String, val syncedAt: Long?, val nowSec: Long, val wifiOnly: Boolean, val reminders: Boolean,
-    val theme: ThemeMode, val storageUsed: Long, val cardsTotal: Int, val model: String, val hasKey: Boolean, val sessionUsage: Usage, val version: String,
+    val theme: ThemeMode, val storageUsed: Long, val cardsTotal: Int, val provider: Provider, val model: String, val keys: Set<Provider>, val sessionUsage: Usage, val version: String,
 )
 
 class ProfileActions(
-    val onGrades: () -> Unit = {}, val onReview: () -> Unit = {}, val onNotebook: () -> Unit = {}, val onSync: () -> Unit = {}, val onWifiOnly: (Boolean) -> Unit = {},
+    val onGrades: () -> Unit = {}, val onReview: () -> Unit = {}, val onOpenWeb: (String) -> Unit = {}, val onSync: () -> Unit = {}, val onWifiOnly: (Boolean) -> Unit = {},
     val onReminders: (Boolean) -> Unit = {}, val onTheme: (ThemeMode) -> Unit = {}, val onDeleteDownloads: () -> Unit = {}, val onModel: (String) -> Unit = {},
-    val onClearKey: () -> Unit = {}, val onLogout: () -> Unit = {},
+    val onProvider: (Provider) -> Unit = {}, val onSaveKey: (Provider, String) -> Unit = { _, _ -> }, val onClearKey: (Provider) -> Unit = {}, val onLogout: () -> Unit = {},
 )
 
 @Composable
 fun ProfileScreen(vm: MainViewModel, onGrades: () -> Unit, onReview: () -> Unit = {}) {
     val site by vm.site.collectAsStateWithLifecycle(); val snap by vm.snapshot.collectAsStateWithLifecycle(); val tick by vm.tick.collectAsStateWithLifecycle()
     val theme by vm.theme.collectAsStateWithLifecycle(); val cards by vm.cards.collectAsStateWithLifecycle()
-    val model by vm.ai.model.collectAsStateWithLifecycle(); val hasKey by vm.ai.hasKey.collectAsStateWithLifecycle(); val usage by vm.ai.sessionUsage.collectAsStateWithLifecycle()
+    val model by vm.ai.model.collectAsStateWithLifecycle(); val keys by vm.ai.keys.collectAsStateWithLifecycle(); val provider by vm.ai.provider.collectAsStateWithLifecycle()
+    val usage by vm.ai.sessionUsage.collectAsStateWithLifecycle()
     var wifi by remember { mutableStateOf(vm.repo.wifiOnly) }; var remind by remember { mutableStateOf(vm.repo.reminders) }
     val used = remember(tick) { vm.repo.storageUsed() }
-    val st = ProfileState(site?.fullName.orEmpty(), site?.siteName.orEmpty(), site?.url.orEmpty(), snap?.syncedAt, System.currentTimeMillis() / 1000, wifi, remind, theme, used, cards.size, model, hasKey, usage, "2.1")
-    ProfileContent(st, ProfileActions(onGrades, onReview, vm::openNotebookLm, { vm.sync() }, { wifi = it; vm.setWifiOnly(it) }, { remind = it; vm.setReminders(it) }, vm::setTheme,
-        { vm.deleteDownloads() }, vm.ai::setModel, vm.ai::clearKey, vm::logout))
+    val st = ProfileState(site?.fullName.orEmpty(), site?.siteName.orEmpty(), site?.url.orEmpty(), snap?.syncedAt, System.currentTimeMillis() / 1000, wifi, remind, theme, used, cards.size, provider, model, keys, usage, "2.2")
+    ProfileContent(st, ProfileActions(onGrades, onReview, vm::openWeb, { vm.sync() }, { wifi = it; vm.setWifiOnly(it) }, { remind = it; vm.setReminders(it) }, vm::setTheme,
+        { vm.deleteDownloads() }, { vm.ai.setModel(it) }, vm.ai::setProvider, { p, k -> vm.ai.setKey(k, p) }, { vm.ai.clearKey(it) }, vm::logout))
 }
 
 private val NIM = Regex("\\b(\\d{6,})\\b")
@@ -78,7 +79,11 @@ fun ProfileContent(s: ProfileState, a: ProfileActions) {
         Group("Belajar") {
             Row2(Icons.Rounded.Insights, "Nilai saya", "Ringkasan per kursus", cs.primary, onClick = a.onGrades) { Chevron() }
             Row2(Icons.Rounded.Style, "Kartu hafalan", "${s.cardsTotal} kartu", cs.secondary, onClick = a.onReview) { Chevron() }
-            Row2(Icons.Rounded.OpenInNew, "NotebookLM", "Buka di browser (login Google)", cs.tertiary, onClick = a.onNotebook) { Chevron() }
+        }
+        Group("Aplikasi AI resmi (login SSO / Google)") {
+            Row2(Icons.Rounded.AutoAwesome, "Claude (claude.ai)", "Login SSO seperti biasa · ada paket gratis", cs.tertiary, onClick = { a.onOpenWeb("https://claude.ai") }) { Chevron() }
+            Row2(Icons.Rounded.AutoAwesome, "Gemini", "Login akun Google · gratis", cs.primary, onClick = { a.onOpenWeb("https://gemini.google.com") }) { Chevron() }
+            Row2(Icons.Rounded.OpenInNew, "NotebookLM", "Login akun Google · gratis", cs.secondary, onClick = { a.onOpenWeb("https://notebooklm.google.com") }) { Chevron() }
         }
         Group("Unduhan & notifikasi") {
             Row2(Icons.Rounded.Wifi, "Unduh hanya lewat Wi-Fi", "Hemat kuota seluler", cs.secondary) { Switch(s.wifiOnly, a.onWifiOnly) }
@@ -98,16 +103,42 @@ fun ProfileContent(s: ProfileState, a: ProfileActions) {
                 }
             }
         }
-        Group("Claude AI") {
-            val prices = mapOf("claude-opus-5-5" to "Terpintar · $4 / $20 per juta token", "claude-sonnet-5-5" to "Seimbang · $2 / $10", "claude-haiku-5-5" to "Termurah · $0,10 / $0,50")
-            Models.all.forEach { (id, label) ->
-                Row(Modifier.fillMaxWidth().clickable { a.onModel(id) }.padding(horizontal = 12.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
-                    RadioButton(s.model == id, { a.onModel(id) })
-                    Column { Text(label.substringBefore(" ("), style = MaterialTheme.typography.bodyMedium); Text(prices.getValue(id), style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant) }
+        Group("Asisten AI") {
+            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text("Penyedia", style = MaterialTheme.typography.titleSmall)
+                SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
+                    Provider.entries.forEachIndexed { i, p ->
+                        SegmentedButton(s.provider == p, { a.onProvider(p) }, SegmentedButtonDefaults.itemShape(i, Provider.entries.size),
+                            colors = SegmentedButtonDefaults.colors(activeContainerColor = cs.tertiaryContainer, activeContentColor = cs.onTertiaryContainer, activeBorderColor = cs.tertiaryContainer)) { Text(p.label.substringAfter(' ')) }
+                    }
+                }
+                if (s.provider == Provider.GEMINI && Logic.freeTier(s.model)) InfoBanner("Tingkat gratis: isi permintaan dapat dipakai Google untuk memperbaiki produknya. Jangan kirim data pribadi; kunci berbayar tidak begitu.", tone = Tone.WARN, icon = Icons.Rounded.Info)
+            }
+            Models.of(s.provider).forEach { m ->
+                Row(Modifier.fillMaxWidth().clickable { a.onModel(m.id) }.padding(horizontal = 12.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                    RadioButton(s.model == m.id, { a.onModel(m.id) })
+                    Column { Text(m.label, style = MaterialTheme.typography.bodyMedium); Text(m.note, style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant) }
                 }
             }
+            var custom by remember(s.provider) { mutableStateOf(if (Models.of(s.provider).none { it.id == s.model }) s.model else "") }
+            Column(Modifier.padding(start = 16.dp, end = 16.dp, bottom = 12.dp, top = 4.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                OutlinedTextField(custom, { custom = it }, Modifier.fillMaxWidth(), singleLine = true, label = { Text("ID model lain (opsional)") }, placeholder = { Text(Models.default(s.provider)) },
+                    supportingText = { Text("Nama model sering berubah; isi bila daftar di atas sudah usang.") },
+                    trailingIcon = { TextButton({ a.onModel(custom) }, enabled = custom.isNotBlank() && custom != s.model) { Text("Pakai") } })
+            }
             HorizontalDivider(color = cs.outlineVariant)
-            Row2(Icons.Rounded.Key, "Kunci API", if (s.hasKey) "Tersimpan terenkripsi" else "Belum diisi (tab AI)", cs.tertiary) { if (s.hasKey) TextButton(a.onClearKey) { Text("Hapus", color = cs.error) } }
+            Provider.entries.forEach { p ->
+                var dialog by remember { mutableStateOf(false) }
+                Row2(Icons.Rounded.Key, "Kunci ${p.label.substringAfter(' ')}", if (p in s.keys) "Tersimpan terenkripsi" else "Belum diisi", cs.tertiary) {
+                    if (p in s.keys) TextButton({ a.onClearKey(p) }) { Text("Hapus", color = cs.error) } else TextButton({ dialog = true }) { Text("Isi") }
+                }
+                if (dialog) {
+                    var k by remember { mutableStateOf("") }
+                    AlertDialog({ dialog = false }, title = { Text("Kunci API ${p.label}") },
+                        text = { OutlinedTextField(k, { k = it }, singleLine = true, visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(), label = { Text(if (p == Provider.GEMINI) "AIza…" else "sk-ant-…") }) },
+                        confirmButton = { TextButton({ a.onSaveKey(p, k); dialog = false }, enabled = k.isNotBlank()) { Text("Simpan") } }, dismissButton = { TextButton({ dialog = false }) { Text("Batal") } })
+                }
+            }
             if (!s.sessionUsage.isEmpty) Row2(Icons.Rounded.Payments, "Pemakaian sesi ini", s.sessionUsage.label(s.model), cs.outline) {}
         }
         Group("Akun") {

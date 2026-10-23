@@ -61,6 +61,9 @@ object Logic {
     }
 
     /** Warna banner stabil per kursus berdasarkan id (id Moodle berurutan, jadi kursus bersebelahan jarang kembar). */
+    /** Model Gemini yang punya tingkat gratis (data bisa dipakai Google untuk perbaikan produk). */
+    fun freeTier(model: String) = model.startsWith("gemini") && !model.contains("argon")
+
     fun paletteIndex(key: Long, size: Int): Int = Math.floorMod(key, size.toLong()).toInt()
 
     fun fmtSize(b: Long) = when {
@@ -100,11 +103,19 @@ data class Usage(val input: Long = 0, val cacheRead: Long = 0, val cacheWrite: L
     operator fun plus(o: Usage) = Usage(input + o.input, cacheRead + o.cacheRead, cacheWrite + o.cacheWrite, output + o.output)
     val isEmpty get() = input + cacheRead + cacheWrite + output == 0L
 
-    fun costUsd(model: String): Double {
+    /**
+     * Estimasi biaya (USD per juta token; harga publik). Gemini: harga Argon/Flash naik pada 1 Des 2026 / 1 Jan 2027.
+     * Tingkat gratis Gemini tidak ikut dihitung (lihat [Logic.freeTier]).
+     */
+    fun costUsd(model: String, today: java.time.LocalDate = java.time.LocalDate.now()): Double {
         val (inP, outP, readP) = when {
             model.contains("haiku") -> Triple(0.10, 0.50, 0.01)
             model.contains("sonnet") -> Triple(2.0, 10.0, 0.20)
-            else -> Triple(4.0, 20.0, 0.20)
+            model.startsWith("claude") -> Triple(4.0, 20.0, 0.20)
+            model.contains("argon") -> if (today < java.time.LocalDate.of(2026, 12, 1)) Triple(2.0, 10.0, 0.10) else Triple(4.0, 20.0, 0.20)
+            model.contains("flash-lite") -> Triple(0.30, 2.50, 0.03)
+            model.contains("flash") -> if (today < java.time.LocalDate.of(2027, 1, 1)) Triple(0.75, 3.75, 0.075) else Triple(1.50, 7.50, 0.15)
+            else -> Triple(1.0, 5.0, 0.1)
         }
         return (input * inP + cacheWrite * inP * 1.25 + cacheRead * readP + output * outP) / 1_000_000.0
     }
@@ -116,6 +127,7 @@ data class Usage(val input: Long = 0, val cacheRead: Long = 0, val cacheWrite: L
             append("↑").append(k(input + cacheWrite + cacheRead))
             if (cacheRead > 0) append(" (cache ").append(k(cacheRead)).append(')')
             append(" ↓").append(k(output)).append(" · ≈ $").append(if (cost < 0.01) "%.4f".format(java.util.Locale.US, cost) else "%.2f".format(java.util.Locale.US, cost))
+            if (Logic.freeTier(model)) append(" jika berbayar")
         }
     }
 }

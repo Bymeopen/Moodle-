@@ -75,7 +75,7 @@ Modal    Rp 1.000.000  (K)
     )
 
     fun state(mode: AiMode, hasKey: Boolean = true, chat: List<ChatMsg> = emptyList(), busy: Boolean = false, error: String? = null, courseId: Long? = 12L) = AiState(
-        hasKey, "claude-opus-5-5", mode, Fx.snapshot.courses, courseId, false, chat, busy, error, if (mode == AiMode.SUMMARY) md else "",
+        hasKey, Provider.GEMINI, setOf(Provider.GEMINI), "gemini-3.8-flash", mode, Fx.snapshot.courses, courseId, false, chat, busy, error, if (mode == AiMode.SUMMARY) md else "",
         if (mode == AiMode.QUIZ) quiz else emptyList(), if (mode == AiMode.CARDS) drafts else emptyList(), cards, emptyList(), emptySet(), Usage(2400, 16800, 0, 900),
         listOf("Ringkas poin terpenting kursus ini", "Jelaskan konsep tersulit dengan contoh sederhana", "Apa yang paling mungkin keluar di ujian?"),
     )

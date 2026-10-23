@@ -56,7 +56,7 @@ class MoreShotTest {
     private fun detail(mode: ThemeMode) = show("detail", mode) {
         CourseDetailContent(Fx.akuntansi.copy(items = Fx.akuntansi.items + Fx.aik.items.take(3), summary = "Dasar-dasar pencatatan dan pelaporan keuangan."), Repo.CourseStats(3, 1, 21_000_000, 5_800_000), Fx.now, setOf(12L), DlState(), mapOf("12/13/${"https://lms.kampus.ac.id/webservice/pluginfile.php/Buku-Ajar-Akuntansi.pdf".hashCode()}" to 0.4f),
             isDownloaded = { _, f -> f.name.startsWith("Modul") }, fileKey = { i, f -> "12/${i.id}/${f.url.hashCode()}" }, onBack = {}, onDownloadCourse = {}, onPause = {}, onDeleteDownloads = {},
-            onOpenFile = { _, _ -> }, onDownloadFile = { _, _ -> }, onLink = {}, onToggleDone = {}, onAskAi = {}, onExportZip = {}, onShareNotebook = {}, onOpenNotebook = {})
+            onOpenFile = { _, _ -> }, onDownloadFile = { _, _ -> }, onLink = {}, onToggleDone = {}, onAskAi = {}, onExportZip = {}, onShareNotebook = {}, onOpenWeb = {})
     }
     @Test fun detailLight() = detail(ThemeMode.LIGHT)
     @Test fun detailDark() = detail(ThemeMode.DARK)
@@ -71,7 +71,7 @@ class MoreShotTest {
     @Test fun aiKeyLight() = show("ai_key", ThemeMode.LIGHT) { AiContent(FxAi.state(AiMode.CHAT, hasKey = false), AiActions()) }
     @Test fun reviewLight() = show("review", ThemeMode.LIGHT) { ReviewContent(FxAi.cards.take(1), { c, _ -> c }, {}) }
 
-    private val profile = ProfileState("MUHAMMAD HARIS ILYASA 20260500714", "Solusi | SiberMu", "https://solusi.sibermu.ac.id", Fx.now - 300, Fx.now, true, true, ThemeMode.SYSTEM, 9_200_000, 5, "claude-opus-5-5", true, Usage(2400, 16800, 0, 900), "2.1")
+    private val profile = ProfileState("MUHAMMAD HARIS ILYASA 20260500714", "Solusi | SiberMu", "https://solusi.sibermu.ac.id", Fx.now - 300, Fx.now, true, true, ThemeMode.SYSTEM, 9_200_000, 5, Provider.GEMINI, "gemini-3.8-flash", setOf(Provider.GEMINI), Usage(2400, 16800, 0, 900), "2.2")
     @Test fun profileLight() = show("profile", ThemeMode.LIGHT) { ProfileContent(profile, ProfileActions()) }
     @Test fun profileDark() = show("profile", ThemeMode.DARK) { ProfileContent(profile, ProfileActions()) }
 

@@ -13,24 +13,45 @@ import org.json.JSONObject
 import java.io.File
 import java.util.UUID
 
-const val MAX_PDF_BYTES = 20L * 1024 * 1024
-
 /** PDF terunduh yang bisa dilampirkan ke Claude. */
 data class PdfSource(val key: String, val name: String, val size: Long, val file: File)
 data class Quiz(val text: String, val options: List<String>, val correct: Int, val explanation: String = "")
 data class Draft(val front: String, val back: String)
 enum class AiMode(val label: String) { CHAT("Chat"), SUMMARY("Ringkas"), QUIZ("Soal"), CARDS("Kartu") }
 
-/** Fitur Claude di dalam aplikasi: chat tutor, ringkasan, soal latihan, kartu hafalan. Kunci API milik pengguna. */
+/** Fitur AI di dalam aplikasi: chat tutor, ringkasan, soal latihan, kartu hafalan. Penyedia: Google Gemini atau Claude, dengan kunci API milik pengguna. */
 class AiController(private val app: Application, private val repo: Repo, private val scope: CoroutineScope) {
     private val prefs = app.getSharedPreferences("ai", Application.MODE_PRIVATE)
     private val store = ChatStore(File(app.filesDir, "chats"))
-    private fun key() = SecretStore.get(app, "anthropic_key")
+    private fun key(p: Provider) = SecretStore.get(app, p.keyName)
 
-    private val _hasKey = MutableStateFlow(key() != null)
-    val hasKey: StateFlow<Boolean> = _hasKey
-    private val _model = MutableStateFlow(prefs.getString("model", Models.DEFAULT) ?: Models.DEFAULT)
+    private val _provider = MutableStateFlow(runCatching { Provider.valueOf(prefs.getString("provider", null)!!) }.getOrDefault(Provider.GEMINI))
+    val provider: StateFlow<Provider> = _provider
+    private fun savedModel(p: Provider) = prefs.getString("model_${p.name}", null)
+        ?: prefs.getString("model", null)?.takeIf { p == Provider.CLAUDE }          // migrasi dari versi lama (hanya Claude)
+        ?: Models.default(p)
+
+    private val _model = MutableStateFlow(savedModel(_provider.value))
     val model: StateFlow<String> = _model
+    /** Penyedia yang kuncinya sudah diisi. */
+    private val _keys = MutableStateFlow(Provider.entries.filter { key(it) != null }.toSet())
+    val keys: StateFlow<Set<Provider>> = _keys
+    private val _hasKey = MutableStateFlow(key(_provider.value) != null)
+    val hasKey: StateFlow<Boolean> = _hasKey
+    private fun refreshKeys() { _keys.value = Provider.entries.filter { key(it) != null }.toSet(); _hasKey.value = _provider.value in _keys.value }
+
+    fun setProvider(p: Provider) {
+        if (p == _provider.value) return
+        stop(); prefs.edit().putString("provider", p.name).apply(); _provider.value = p; _model.value = savedModel(p); clearSelection(); error.value = null; refreshKeys()
+    }
+    fun setKey(k: String, p: Provider = _provider.value) { SecretStore.put(app, p.keyName, k.trim()); refreshKeys() }
+    fun clearKey(p: Provider = _provider.value) { stop(); SecretStore.remove(app, p.keyName); refreshKeys() }
+    /** Ganti model penyedia [p]; id bebas (nama model berubah-ubah, jadi tidak dibatasi daftar). */
+    fun setModel(id: String, p: Provider = _provider.value) {
+        val clean = id.trim().ifEmpty { return }
+        prefs.edit().putString("model_${p.name}", clean).apply(); if (p == _provider.value) _model.value = clean
+    }
+    fun modelOf(p: Provider) = if (p == _provider.value) _model.value else savedModel(p)
 
     val mode = MutableStateFlow(AiMode.CHAT)
     val courseId = MutableStateFlow<Long?>(null)
@@ -58,9 +79,6 @@ class AiController(private val app: Application, private val repo: Repo, private
     /** Buka AI untuk kursus tertentu pada mode tertentu (dipakai tombol "Tanya Claude" di layar lain). */
     fun open(id: Long?, m: AiMode = AiMode.CHAT) { selectCourse(id); mode.value = m }
 
-    fun setKey(k: String) { SecretStore.put(app, "anthropic_key", k.trim()); _hasKey.value = true }
-    fun clearKey() { stop(); SecretStore.remove(app, "anthropic_key"); _hasKey.value = false }
-    fun setModel(m: String) { prefs.edit().putString("model", m).apply(); _model.value = m }
 
     // ---------- lampiran PDF ----------
     /** PDF yang dipilih pengguna untuk dilampirkan (dibaca langsung oleh Claude; satu halaman memakai ±1.500–3.000 token). */
@@ -76,15 +94,20 @@ class AiController(private val app: Application, private val repo: Repo, private
     private fun mat(c: Course): String = AiMaterial.forAi(c) { i, f -> repo.textOf(c.id, i.id, f) }
     private fun course(id: Long?) = id?.let { cid -> repo.snapshot.value?.courses?.firstOrNull { it.id == cid } }
 
-    /** Baca dan encode PDF terpilih; batas total 20 MB (batas permintaan API 32 MB setelah base64). */
+    /** Baca dan encode PDF terpilih; batas total menurut penyedia (Gemini 14 MB, Claude 20 MB) (batas permintaan API setelah base64). */
     private fun docsFor(c: Course?): List<Doc> {
         if (c == null) return emptyList()
         val chosen = pdfsOf(c).filter { it.key in selected.value }
-        if (chosen.sumOf { it.size } > MAX_PDF_BYTES) throw ApiError("PDF terpilih melebihi 20 MB; kurangi pilihan")
+        val limit = Models.maxPdfBytes(_provider.value)
+        if (chosen.sumOf { it.size } > limit) throw ApiError("PDF terpilih melebihi ${limit / 1048576} MB untuk ${_provider.value.label}; kurangi pilihan")
         return chosen.map { Doc(it.name, java.util.Base64.getEncoder().encodeToString(it.file.readBytes())) }
     }
 
-    private fun client() = ClaudeClient(key() ?: throw ApiError("Kunci API belum diisi"), _model.value)
+    private fun client(): AiBackend {
+        val p = _provider.value
+        val k = key(p) ?: throw ApiError("Kunci API ${p.label} belum diisi")
+        return if (p == Provider.GEMINI) GeminiClient(k, _model.value) else ClaudeClient(k, _model.value)
+    }
 
     private fun run(block: suspend CoroutineScope.() -> Unit) {
         job?.cancel()

@@ -10,17 +10,11 @@ data class Doc(val name: String, val base64: String)
 
 data class ChatMsg(val role: String, val text: String, val docs: List<Doc> = emptyList(), val usage: Usage? = null)
 
-object Models {
-    // default mengikuti rekomendasi Claude API; Sonnet/Haiku lebih murah untuk pemakaian harian
-    val all = listOf("claude-opus-5-5" to "Claude Opus 5.5 (terpintar)", "claude-sonnet-5-5" to "Claude Sonnet 5.5 (seimbang)", "claude-haiku-5-5" to "Claude Haiku 5.5 (termurah)")
-    const val DEFAULT = "claude-opus-5-5"
-}
-
 /**
  * Klien Claude Messages API langsung dari ponsel memakai kunci API milik pengguna.
  * [baseUrl] bisa diganti untuk tes. Tanpa dependensi: HttpURLConnection + org.json.
  */
-class ClaudeClient(private val apiKey: String, private val model: String, private val baseUrl: String = "https://api.anthropic.com") {
+class ClaudeClient(private val apiKey: String, private val model: String, private val baseUrl: String = "https://api.anthropic.com") : AiBackend {
     companion object {
         const val VERSION = "2023-06-01"
         const val FALLBACK_BETA = "server-side-fallback-2026-07-01"
@@ -98,7 +92,7 @@ class ClaudeClient(private val apiKey: String, private val model: String, privat
     }
 
     /** Streaming teks. [onText] dipanggil per potongan. Mengembalikan teks lengkap. */
-    fun stream(system: String, messages: List<ChatMsg>, shouldStop: () -> Boolean = { false }, cache: Boolean = false, onUsage: (Usage) -> Unit = {}, onText: (String) -> Unit): String {
+    override fun stream(system: String, messages: List<ChatMsg>, shouldStop: () -> Boolean, cache: Boolean, onUsage: (Usage) -> Unit, onText: (String) -> Unit): String {
         val c = send { fb -> body(model, system, messages, stream = true, withFallback = fb, cache = cache && fb) }
         val all = StringBuilder(); var stopReason = ""
         var usage = Usage()
@@ -121,7 +115,7 @@ class ClaudeClient(private val apiKey: String, private val model: String, privat
     }
 
     /** Keluaran terstruktur sesuai skema JSON; hasilnya JSON valid atau ApiError. */
-    fun json(system: String, user: String, schema: JSONObject, docs: List<Doc> = emptyList()): JSONObject {
+    override fun json(system: String, user: String, schema: JSONObject, docs: List<Doc>): JSONObject {
         val c = send { fb -> body(model, system, listOf(ChatMsg("user", user, docs)), stream = false, schema = schema, withFallback = fb) }
         try {
             val resp = JSONObject(c.inputStream.bufferedReader().use { it.readText() })

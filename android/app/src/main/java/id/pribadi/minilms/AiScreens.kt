@@ -36,13 +36,13 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 
 /** Foto keadaan AI untuk UI; dibangun dari [AiController] sehingga layar bisa dirender tanpa ViewModel. */
 data class AiState(
-    val hasKey: Boolean, val model: String, val mode: AiMode, val courses: List<Course>, val courseId: Long?, val socratic: Boolean,
+    val hasKey: Boolean, val provider: Provider, val keys: Set<Provider>, val model: String, val mode: AiMode, val courses: List<Course>, val courseId: Long?, val socratic: Boolean,
     val chat: List<ChatMsg>, val busy: Boolean, val error: String?, val summary: String, val quiz: List<Quiz>, val draft: List<Draft>,
     val cards: List<Card>, val pdfs: List<PdfSource>, val selected: Set<String>, val sessionUsage: Usage, val suggestions: List<String>,
 )
 
 class AiActions(
-    val saveKey: (String) -> Unit = {}, val selectCourse: (Long?) -> Unit = {}, val setMode: (AiMode) -> Unit = {}, val send: (String) -> Unit = {},
+    val saveKey: (String) -> Unit = {}, val setProvider: (Provider) -> Unit = {}, val openLink: (String) -> Unit = {}, val selectCourse: (Long?) -> Unit = {}, val setMode: (AiMode) -> Unit = {}, val send: (String) -> Unit = {},
     val stop: () -> Unit = {}, val newChat: () -> Unit = {}, val setSocratic: (Boolean) -> Unit = {}, val retry: () -> Unit = {},
     val summarize: () -> Unit = {}, val makeQuiz: () -> Unit = {}, val makeCards: () -> Unit = {}, val saveDraft: () -> Unit = {}, val discardDraft: () -> Unit = {},
     val togglePdf: (String) -> Unit = {}, val deleteCard: (String) -> Unit = {}, val review: () -> Unit = {},
@@ -55,6 +55,7 @@ fun AiScreen(vm: MainViewModel, onReview: () -> Unit) {
     val tick by vm.tick.collectAsStateWithLifecycle()
     val cards by vm.cards.collectAsStateWithLifecycle()
     val hasKey by ai.hasKey.collectAsStateWithLifecycle(); val model by ai.model.collectAsStateWithLifecycle()
+    val provider by ai.provider.collectAsStateWithLifecycle(); val keys by ai.keys.collectAsStateWithLifecycle()
     val mode by ai.mode.collectAsStateWithLifecycle(); val cid by ai.courseId.collectAsStateWithLifecycle(); val soc by ai.socratic.collectAsStateWithLifecycle()
     val chat by ai.chat.collectAsStateWithLifecycle(); val busy by ai.busy.collectAsStateWithLifecycle(); val err by ai.error.collectAsStateWithLifecycle()
     val summary by ai.summary.collectAsStateWithLifecycle(); val quiz by ai.quiz.collectAsStateWithLifecycle(); val draft by ai.draft.collectAsStateWithLifecycle()
@@ -62,9 +63,9 @@ fun AiScreen(vm: MainViewModel, onReview: () -> Unit) {
     val courses = snap?.courses.orEmpty()
     val course = courses.firstOrNull { it.id == cid }
     val pdfs = remember(course, tick) { course?.let { ai.pdfsOf(it) }.orEmpty() }
-    val state = AiState(hasKey, model, mode, courses, cid, soc, chat, busy, err, summary, quiz, draft, cards, pdfs, sel, usage, ai.suggestions(course != null))
+    val state = AiState(hasKey, provider, keys, model, mode, courses, cid, soc, chat, busy, err, summary, quiz, draft, cards, pdfs, sel, usage, ai.suggestions(course != null))
     val actions = remember(ai) {
-        AiActions(ai::setKey, ai::selectCourse, { ai.mode.value = it }, ai::send, ai::stop, ai::newChat, { ai.socratic.value = it }, ai::retry,
+        AiActions({ ai.setKey(it) }, ai::setProvider, vm::openLink, ai::selectCourse, { ai.mode.value = it }, ai::send, ai::stop, ai::newChat, { ai.socratic.value = it }, ai::retry,
             ai::summarize, { ai.makeQuiz() }, { ai.makeCards() }, ai::saveDraft, ai::discardDraft, ai::toggle, vm.repo::deleteCard, onReview)
     }
     AiContent(state, actions)
@@ -72,7 +73,7 @@ fun AiScreen(vm: MainViewModel, onReview: () -> Unit) {
 
 @Composable
 fun AiContent(s: AiState, a: AiActions) {
-    if (!s.hasKey) { KeySetup(a.saveKey); return }
+    if (!s.hasKey) { KeySetup(s.provider, a); return }
     val course = s.courses.firstOrNull { it.id == s.courseId }
     Column(Modifier.fillMaxSize().imePadding()) {
         AiHeader(s, course, a)
@@ -96,12 +97,23 @@ private fun AiHeader(s: AiState, course: Course?, a: AiActions) {
     var pdfOpen by rememberSaveable { mutableStateOf(false) }
     Column(Modifier.padding(horizontal = 20.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            Box(Modifier.size(40.dp).clip(CircleShape).background(Brush.linearGradient(listOf(Color(0xFF8B7BFF), Color(0xFF5B3FD9)))), contentAlignment = Alignment.Center) {
+            Box(Modifier.size(40.dp).clip(CircleShape).background(Brush.linearGradient(providerColors(s.provider))), contentAlignment = Alignment.Center) {
                 Icon(Icons.Rounded.AutoAwesome, null, Modifier.size(22.dp), tint = Color.White)
             }
-            Column(Modifier.weight(1f)) {
-                Text("Claude", style = MaterialTheme.typography.titleLarge)
-                Text(Models.all.firstOrNull { it.first == s.model }?.second?.substringBefore(" (") ?: s.model, style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant)
+            Box(Modifier.weight(1f)) {
+                var providerMenu by remember { mutableStateOf(false) }
+                Column(Modifier.clip(MaterialTheme.shapes.small).clickable { providerMenu = true }.padding(vertical = 2.dp, horizontal = 2.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(s.provider.label.substringAfter(' '), style = MaterialTheme.typography.titleLarge); Icon(Icons.Rounded.UnfoldMore, "Ganti penyedia AI", Modifier.size(20.dp), tint = cs.outline)
+                    }
+                    Text(Models.label(s.model), style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant)
+                }
+                DropdownMenu(providerMenu, { providerMenu = false }) {
+                    Provider.entries.forEach { p ->
+                        DropdownMenuItem({ Column { Text(p.label); if (p !in s.keys) Text("Kunci belum diisi", style = MaterialTheme.typography.labelSmall, color = cs.outline) } },
+                            { providerMenu = false; a.setProvider(p) }, trailingIcon = { if (p == s.provider) Icon(Icons.Rounded.Check, null, tint = cs.primary) })
+                    }
+                }
             }
             Box {
                 IconButton({ more = true }) { Icon(Icons.Rounded.MoreVert, "Menu") }
@@ -145,12 +157,12 @@ private fun AiHeader(s: AiState, course: Course?, a: AiActions) {
                     }
                     AnimatedVisibility(pdfOpen) {
                         Column {
-                            Text("Claude membaca PDF langsung (termasuk gambar/tabel); ±1.500–3.000 token per halaman. Maks 20 MB. Berlaku untuk percakapan baru dan fitur lain.", style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant, modifier = Modifier.padding(vertical = 6.dp))
+                            Text("${s.provider.label.substringAfter(' ')} membaca PDF langsung (termasuk gambar/tabel). ${if (s.provider == Provider.GEMINI) "±258 token per halaman" else "±1.500–3.000 token per halaman"}. Maks ${Models.maxPdfBytes(s.provider) / 1048576} MB. Berlaku untuk percakapan baru dan fitur lain.", style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant, modifier = Modifier.padding(vertical = 6.dp))
                             s.pdfs.forEach { p -> Row(verticalAlignment = Alignment.CenterVertically) {
                                 Checkbox(p.key in s.selected, { a.togglePdf(p.key) }); FileTile(FileKind.PDF, 28.dp); Spacer(Modifier.width(8.dp))
                                 Text("${p.name} · ${Logic.fmtSize(p.size)}", style = MaterialTheme.typography.bodySmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
                             } }
-                            if (s.pdfs.filter { it.key in s.selected }.sumOf { it.size } > MAX_PDF_BYTES) Text("Total melebihi 20 MB.", color = cs.error, style = MaterialTheme.typography.bodySmall)
+                            if (s.pdfs.filter { it.key in s.selected }.sumOf { it.size } > Models.maxPdfBytes(s.provider)) Text("Total melebihi ${Models.maxPdfBytes(s.provider) / 1048576} MB.", color = cs.error, style = MaterialTheme.typography.bodySmall)
                         }
                     }
                 }
@@ -259,7 +271,7 @@ private fun SummaryPane(s: AiState, course: Course?, a: AiActions) {
     if (course == null) { NeedCourse(Icons.Rounded.Summarize, "Ringkasan"); return }
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         if (s.summary.isEmpty() && !s.busy) {
-            EmptyState(Icons.Rounded.Summarize, "Ringkas kursus ini", "Claude membuat poin kunci, istilah penting, dan daftar yang perlu dihafal dari materi.", actionLabel = "Buat ringkasan", onAction = a.summarize)
+            EmptyState(Icons.Rounded.Summarize, "Ringkas kursus ini", "AI membuat poin kunci, istilah penting, dan daftar yang perlu dihafal dari materi.", actionLabel = "Buat ringkasan", onAction = a.summarize)
         } else {
             Card2(Modifier.fillMaxWidth()) { MarkdownText(s.summary.ifEmpty { "…" }, Modifier.padding(16.dp)) }
             if (!s.busy) Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -280,7 +292,7 @@ private fun QuizPane(s: AiState, course: Course?, a: AiActions) {
     var checked by remember(s.quiz) { mutableStateOf(false) }
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         if (s.quiz.isEmpty() && !s.busy) {
-            EmptyState(Icons.Rounded.Quiz, "Uji pemahaman Anda", "Claude membuat 5 soal pilihan ganda dari materi, lengkap dengan penjelasan jawaban.", actionLabel = "Buat soal", onAction = a.makeQuiz)
+            EmptyState(Icons.Rounded.Quiz, "Uji pemahaman Anda", "AI membuat 5 soal pilihan ganda dari materi, lengkap dengan penjelasan jawaban.", actionLabel = "Buat soal", onAction = a.makeQuiz)
         }
         if (checked) {
             val score = s.quiz.indices.count { answers[it] == s.quiz[it].correct }
@@ -348,7 +360,7 @@ private fun CardsPane(s: AiState, course: Course?, a: AiActions) {
             }
         }
         if (course == null) NeedCourse(Icons.Rounded.Style, "Membuat kartu") else {
-            OutlinedButton(a.makeCards, enabled = !s.busy, modifier = Modifier.fillMaxWidth()) { Icon(Icons.Rounded.AutoAwesome, null, Modifier.size(18.dp)); Spacer(Modifier.width(8.dp)); Text("Buat 10 kartu dengan Claude") }
+            OutlinedButton(a.makeCards, enabled = !s.busy, modifier = Modifier.fillMaxWidth()) { Icon(Icons.Rounded.AutoAwesome, null, Modifier.size(18.dp)); Spacer(Modifier.width(8.dp)); Text("Buat 10 kartu dengan AI") }
             if (s.draft.isNotEmpty()) {
                 Text("Draf — tinjau dulu, belum tersimpan", style = MaterialTheme.typography.labelLarge, color = cs.onSurfaceVariant)
                 s.draft.forEach { d -> MiniCard(d.front, d.back) }
@@ -376,27 +388,40 @@ private fun MiniCard(front: String, back: String, onDelete: (() -> Unit)? = null
     }
 
 // ------------------------------------------------------------------------------------- kunci API
+fun providerColors(p: Provider) = if (p == Provider.GEMINI) listOf(Color(0xFF4285F4), Color(0xFF9B72CB)) else listOf(Color(0xFF8B7BFF), Color(0xFF5B3FD9))
+
 @Composable
-private fun KeySetup(onSave: (String) -> Unit) {
-    var key by rememberSaveable { mutableStateOf("") }
+private fun KeySetup(p: Provider, a: AiActions) {
+    var key by rememberSaveable(p) { mutableStateOf("") }
     val cs = MaterialTheme.colorScheme
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).imePadding().padding(20.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
-        Box(Modifier.size(56.dp).clip(CircleShape).background(Brush.linearGradient(listOf(Color(0xFF8B7BFF), Color(0xFF5B3FD9)))), contentAlignment = Alignment.Center) { Icon(Icons.Rounded.AutoAwesome, null, Modifier.size(30.dp), tint = Color.White) }
-        Text("Belajar bersama Claude", style = MaterialTheme.typography.headlineMedium)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Provider.entries.forEach { x -> FilterChip(p == x, { a.setProvider(x) }, { Text(x.label) }, shape = CircleShape,
+                colors = FilterChipDefaults.filterChipColors(selectedContainerColor = cs.tertiaryContainer, selectedLabelColor = cs.onTertiaryContainer)) }
+        }
+        Box(Modifier.size(56.dp).clip(CircleShape).background(Brush.linearGradient(providerColors(p))), contentAlignment = Alignment.Center) { Icon(Icons.Rounded.AutoAwesome, null, Modifier.size(30.dp), tint = Color.White) }
+        Text(if (p == Provider.GEMINI) "Belajar bersama Gemini" else "Belajar bersama Claude", style = MaterialTheme.typography.headlineMedium)
         Text("Tanya jawab, ringkasan, soal latihan berpenjelasan, dan kartu hafalan — semuanya dari materi kursus Anda.", style = MaterialTheme.typography.bodyLarge, color = cs.onSurfaceVariant)
         Card2(Modifier.fillMaxWidth()) {
             Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Text("Kunci API Claude", style = MaterialTheme.typography.titleSmall)
-                OutlinedTextField(key, { key = it }, Modifier.fillMaxWidth(), singleLine = true, placeholder = { Text("sk-ant-…") }, visualTransformation = PasswordVisualTransformation(), leadingIcon = { Icon(Icons.Rounded.Key, null) })
-                Button({ onSave(key); key = "" }, enabled = key.isNotBlank(), modifier = Modifier.fillMaxWidth()) { Text("Simpan kunci") }
+                Text("Kunci API ${p.label.substringAfter(' ')}", style = MaterialTheme.typography.titleSmall)
+                OutlinedTextField(key, { key = it }, Modifier.fillMaxWidth(), singleLine = true, placeholder = { Text(if (p == Provider.GEMINI) "AIza…" else "sk-ant-…") }, visualTransformation = PasswordVisualTransformation(), leadingIcon = { Icon(Icons.Rounded.Key, null) })
+                Button({ a.saveKey(key); key = "" }, enabled = key.isNotBlank(), modifier = Modifier.fillMaxWidth()) { Text("Simpan kunci") }
+                OutlinedButton({ a.openLink(p.keyUrl) }, Modifier.fillMaxWidth()) { Icon(Icons.Rounded.OpenInNew, null, Modifier.size(18.dp)); Spacer(Modifier.width(8.dp)); Text(if (p == Provider.GEMINI) "Buat kunci gratis di Google AI Studio" else "Buat kunci di console.anthropic.com") }
             }
         }
-        listOf(Icons.Rounded.Lock to "Disimpan terenkripsi di ponsel (Android Keystore) dan hanya dikirim ke api.anthropic.com.",
-            Icons.Rounded.Key to "Claude tidak punya login SSO/Google untuk aplikasi lain; aksesnya lewat kunci API dari console.anthropic.com.",
-            Icons.Rounded.Payments to "Pemakaian ditagih ke akun Anda. Estimasi biaya tampil di tiap jawaban; model murah bisa dipilih di Profil.",
-            Icons.Rounded.PictureAsPdf to "Teks halaman, docx/pptx, dan PDF terpilih dibaca langsung oleh Claude.").forEach { (i, t) ->
-            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) { Icon(i, null, Modifier.size(20.dp), tint = cs.tertiary); Text(t, style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant) }
-        }
+        if (p == Provider.GEMINI) InfoBanner("Tingkat gratis: isi permintaan (materi, pertanyaan) dapat dipakai Google untuk memperbaiki produknya. Jangan kirim data pribadi; kunci berbayar tidak begitu.", tone = Tone.WARN, icon = Icons.Rounded.Info)
+        val points = if (p == Provider.GEMINI) listOf(
+            Icons.Rounded.Lock to "Kunci disimpan terenkripsi di ponsel (Android Keystore) dan hanya dikirim ke generativelanguage.googleapis.com.",
+            Icons.Rounded.Payments to "Model Flash dan Flash-Lite GRATIS (dibatasi per menit/hari). Jika batas tercapai, tunggu sebentar atau pilih Flash-Lite.",
+            Icons.Rounded.PictureAsPdf to "PDF terpilih dibaca langsung oleh Gemini; teks halaman dan docx/pptx ikut sebagai konteks.",
+            Icons.Rounded.Key to "Google tidak menyediakan login akun Google untuk aplikasi lain; aksesnya lewat kunci API.")
+        else listOf(
+            Icons.Rounded.Lock to "Kunci disimpan terenkripsi di ponsel (Android Keystore) dan hanya dikirim ke api.anthropic.com.",
+            Icons.Rounded.Payments to "Claude API BERBAYAR (tidak ada tingkat gratis; butuh saldo di console.anthropic.com). Jika tidak ingin membayar, pakai Gemini.",
+            Icons.Rounded.PictureAsPdf to "PDF terpilih dibaca langsung oleh Claude; teks halaman dan docx/pptx ikut sebagai konteks.",
+            Icons.Rounded.Key to "Claude tidak punya login SSO/Google untuk aplikasi lain; aksesnya lewat kunci API.")
+        points.forEach { (i, t) -> Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) { Icon(i, null, Modifier.size(20.dp), tint = cs.tertiary); Text(t, style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant) } }
     }
 }
 

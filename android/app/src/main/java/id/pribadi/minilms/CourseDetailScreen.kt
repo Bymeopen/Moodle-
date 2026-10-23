@@ -36,7 +36,7 @@ fun CourseDetailScreen(vm: MainViewModel, c: Course, st: Repo.CourseStats, onBac
         isDownloaded = { i, f -> tick >= 0 && vm.repo.isDownloaded(c.id, i.id, f) }, fileKey = { i, f -> vm.repo.fileKey(c.id, i.id, f) },
         onBack = onBack, onDownloadCourse = { vm.downloadCourse(c.id) }, onPause = vm::pause, onDeleteDownloads = { vm.deleteDownloads(c.id) },
         onOpenFile = { i, f -> vm.open(c, i, f) }, onDownloadFile = { i, f -> vm.downloadFile(c, i, f) }, onLink = vm::openLink, onToggleDone = vm::toggleDone,
-        onAskAi = onAskAi, onExportZip = { zip.launch("${safeName(c.name)}.zip") }, onShareNotebook = { vm.shareToNotebook(c) }, onOpenNotebook = vm::openNotebookLm)
+        onAskAi = onAskAi, onExportZip = { zip.launch("${safeName(c.name)}.zip") }, onShareNotebook = { vm.shareToNotebook(c) }, onOpenWeb = vm::openWeb)
 }
 
 private enum class DetailTab(val label: String) { MATERI("Materi"), TUGAS("Tugas"), NILAI("Nilai") }
@@ -47,7 +47,7 @@ fun CourseDetailContent(
     isDownloaded: (Item, FileRef) -> Boolean, fileKey: (Item, FileRef) -> String,
     onBack: () -> Unit, onDownloadCourse: () -> Unit, onPause: () -> Unit, onDeleteDownloads: () -> Unit,
     onOpenFile: (Item, FileRef) -> Unit, onDownloadFile: (Item, FileRef) -> Unit, onLink: (String) -> Unit, onToggleDone: (Long) -> Unit,
-    onAskAi: (AiMode) -> Unit, onExportZip: () -> Unit, onShareNotebook: () -> Unit, onOpenNotebook: () -> Unit,
+    onAskAi: (AiMode) -> Unit, onExportZip: () -> Unit, onShareNotebook: () -> Unit, onOpenWeb: (String) -> Unit,
 ) {
     var tab by rememberSaveable { mutableStateOf(DetailTab.MATERI) }
     val materials = remember(c) { c.items.filter { it.type != "assignment" } }
@@ -68,8 +68,10 @@ fun CourseDetailContent(
                         FilledIconButton({ menu = true }, colors = IconButtonDefaults.filledIconButtonColors(containerColor = Color.Black.copy(0.25f), contentColor = Color.White)) { Icon(Icons.Rounded.MoreVert, "Menu") }
                         DropdownMenu(menu, { menu = false }) {
                             DropdownMenuItem({ Text("Ekspor sebagai ZIP") }, { menu = false; onExportZip() }, leadingIcon = { Icon(Icons.Rounded.FolderZip, null) })
-                            DropdownMenuItem({ Text("Kirim ke NotebookLM") }, { menu = false; onShareNotebook() }, leadingIcon = { Icon(Icons.Rounded.Share, null) })
-                            DropdownMenuItem({ Text("Buka NotebookLM") }, { menu = false; onOpenNotebook() }, leadingIcon = { Icon(Icons.Rounded.OpenInNew, null) })
+                            DropdownMenuItem({ Text("Bagikan materi ke aplikasi AI") }, { menu = false; onShareNotebook() }, leadingIcon = { Icon(Icons.Rounded.Share, null) })
+                            DropdownMenuItem({ Text("Buka Claude (login SSO)") }, { menu = false; onOpenWeb("https://claude.ai") }, leadingIcon = { Icon(Icons.Rounded.OpenInNew, null) })
+                            DropdownMenuItem({ Text("Buka Gemini (login Google)") }, { menu = false; onOpenWeb("https://gemini.google.com") }, leadingIcon = { Icon(Icons.Rounded.OpenInNew, null) })
+                            DropdownMenuItem({ Text("Buka NotebookLM") }, { menu = false; onOpenWeb("https://notebooklm.google.com") }, leadingIcon = { Icon(Icons.Rounded.OpenInNew, null) })
                             if (st.downloaded > 0) DropdownMenuItem({ Text("Hapus unduhan kursus") }, { menu = false; confirmDelete = true }, leadingIcon = { Icon(Icons.Rounded.DeleteOutline, null) })
                         }
                     }

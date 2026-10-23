@@ -198,7 +198,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         // clipData diperlukan agar izin baca ikut diteruskan ke aplikasi tujuan lewat chooser
         send.clipData = android.content.ClipData.newRawUri(null, uris[0]).also { cd -> uris.drop(1).forEach { cd.addItem(android.content.ClipData.Item(it)) } }
         try {
-            ctx.startActivity(Intent.createChooser(send, "Kirim ke NotebookLM / Drive").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+            ctx.startActivity(Intent.createChooser(send, "Bagikan materi ke NotebookLM, Claude, Gemini, atau Drive").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
             if (all.size > sent.size) _message.value = "Hanya $NOTEBOOK_MAX_SOURCES sumber pertama yang dikirim (batas NotebookLM)"
             else if (files.isEmpty()) _message.value = "Hanya ringkasan teks yang dikirim; unduh file kursus dulu untuk menyertakan PDF/slide"
         } catch (e: ActivityNotFoundException) { _message.value = "Tidak ada aplikasi untuk menerima file" }
@@ -222,17 +222,16 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /**
-     * Buka NotebookLM di Chrome Custom Tab. Google melarang login OAuth di WebView tertanam,
-     * sedangkan Custom Tab memakai sesi Google di browser dan tampil menyatu dengan aplikasi.
+     * Buka situs di Chrome Custom Tab (NotebookLM, claude.ai, gemini.google.com). Google dan Anthropic tidak mengizinkan login OAuth/SSO
+     * di WebView tertanam, sedangkan Custom Tab memakai sesi login di browser dan tampil menyatu dengan aplikasi.
      */
-    fun openNotebookLm() {
+    fun openWeb(url: String) {
         val ctx = getApplication<Application>()
-        val tab = androidx.browser.customtabs.CustomTabsIntent.Builder()
-            .setToolbarColor(0xFFE8590C.toInt()).setShowTitle(true).build()
+        val tab = androidx.browser.customtabs.CustomTabsIntent.Builder().setToolbarColor(0xFFE8590C.toInt()).setShowTitle(true).build()
         tab.intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        try { tab.launchUrl(ctx, Uri.parse("https://notebooklm.google.com")) }
-        catch (e: ActivityNotFoundException) { _message.value = "Tidak ada browser untuk membuka NotebookLM" }
+        try { tab.launchUrl(ctx, Uri.parse(url)) } catch (e: ActivityNotFoundException) { _message.value = "Tidak ada browser untuk membuka situs ini" }
     }
+    fun openNotebookLm() = openWeb("https://notebooklm.google.com")
 
     fun openLink(url: String) {
         val ctx = getApplication<Application>()
