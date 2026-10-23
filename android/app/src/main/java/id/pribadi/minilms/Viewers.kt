@@ -77,7 +77,7 @@ private fun PdfPages(file: File, onExternal: () -> Unit) {
     val list = rememberLazyListState()
     BoxWithConstraints(Modifier.fillMaxSize()) {
         val pageWidth = maxWidth * zoom
-        val widthPx = with(LocalDensity.current) { pageWidth.roundToPx() }
+        val widthPx = with(LocalDensity.current) { pageWidth.roundToPx() }.coerceIn(200, 2400)
         Box(Modifier.fillMaxSize().horizontalScroll(rememberScrollState())) {
             LazyColumn(Modifier.width(pageWidth).fillMaxHeight(), state = list, verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 items(renderer.pageCount, key = { it }) { i -> PdfPage(renderer, mutex, i, widthPx) }
@@ -87,7 +87,7 @@ private fun PdfPages(file: File, onExternal: () -> Unit) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text("${list.firstVisibleItemIndex + 1} / ${renderer.pageCount}", Modifier.padding(start = 14.dp), style = MaterialTheme.typography.labelLarge)
                 IconButton({ zoom = (zoom - 0.5f).coerceAtLeast(1f) }, enabled = zoom > 1f) { Icon(Icons.Rounded.ZoomOut, "Perkecil") }
-                IconButton({ zoom = (zoom + 0.5f).coerceAtMost(3f) }, enabled = zoom < 3f) { Icon(Icons.Rounded.ZoomIn, "Perbesar") }
+                IconButton({ zoom = (zoom + 0.5f).coerceAtMost(2f) }, enabled = zoom < 2f) { Icon(Icons.Rounded.ZoomIn, "Perbesar") }
             }
         }
     }
@@ -95,6 +95,7 @@ private fun PdfPages(file: File, onExternal: () -> Unit) {
 
 @Composable
 private fun PdfPage(renderer: PdfRenderer, mutex: Mutex, index: Int, widthPx: Int) {
+    var failed by remember(index, widthPx) { mutableStateOf(false) }
     val bmp by produceState<Bitmap?>(null, index, widthPx) {
         value = withContext(Dispatchers.IO) {
             try {
@@ -106,11 +107,13 @@ private fun PdfPage(renderer: PdfRenderer, mutex: Mutex, index: Int, widthPx: In
                     } finally { page.close() }
                 }
             } catch (e: Exception) { null } catch (e: OutOfMemoryError) { null }
-        }
+        }.also { if (it == null) failed = true }
     }
     val b = bmp
     if (b != null) Image(b.asImageBitmap(), "Halaman ${index + 1}", Modifier.fillMaxWidth(), contentScale = ContentScale.FillWidth)
-    else Box(Modifier.fillMaxWidth().height(320.dp), contentAlignment = Alignment.Center) { CircularProgressIndicator(Modifier.size(28.dp), strokeWidth = 3.dp) }
+    else Box(Modifier.fillMaxWidth().height(320.dp), contentAlignment = Alignment.Center) {
+        if (failed) Text("Halaman ${index + 1} gagal ditampilkan (memori terbatas); kecilkan zoom.", style = MaterialTheme.typography.bodySmall) else CircularProgressIndicator(Modifier.size(28.dp), strokeWidth = 3.dp)
+    }
 }
 
 @Composable
@@ -119,9 +122,14 @@ private fun TextView(file: File, name: String, onExternal: () -> Unit) {
     when (val t = text) {
         null -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
         "" -> Failure("Isi dokumen tidak bisa dibaca di aplikasi.", onExternal)
-        else -> Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text("Tampilan teks; tabel dan gambar tidak ditampilkan.", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            SelectionContainer { Text(t, style = MaterialTheme.typography.bodyLarge) }
+        else -> {
+            val paras = remember(t) { t.split(Regex("\\n{2,}")).filter { it.isNotBlank() } }
+            SelectionContainer {
+                LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    item { Text("Tampilan teks; tabel dan gambar tidak ditampilkan.", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                    items(paras.size) { Text(paras[it], style = MaterialTheme.typography.bodyLarge) }
+                }
+            }
         }
     }
 }

@@ -48,7 +48,7 @@ object LibraryApi {
             val authors = Regex("""person_name">([^<]*)<""").findAll(row.substring(0, m.range.first)).map { clean(it.groupValues[1]).trim(' ', ',') }.filter { it.isNotEmpty() }.joinToString(", ")
             val year = Regex("""\((\d{4})\)""").find(row.substring(0, m.range.first))?.groupValues?.get(1).orEmpty()
             LibItem(LibSource.CAMPUS, "$host/${m.groupValues[1]}", clean(m.groupValues[2]).trimEnd('.'), authors, year, clean(m.groupValues[3]).trim(' ', ',', '.'), "https://$host/${m.groupValues[1]}/")
-        }
+        }.distinctBy { it.id }
     }
 
     private fun clean(s: String) = s.replace(Regex("<[^>]+>"), " ").replace("&amp;", "&").replace("&quot;", "\"").replace("&#39;", "'").replace("&lt;", "<").replace("&gt;", ">").replace(Regex("\\s+"), " ").trim()
@@ -65,17 +65,20 @@ object LibraryApi {
         if (q.isEmpty()) return emptyList()
         return when (source) {
             LibSource.CAMPUS -> searchCampus(campus, q)
-            LibSource.BOOKS -> parseArchive(http.get("https://archive.org/advancedsearch.php?q=${enc("($q) AND mediatype:texts AND access-restricted-item:false")}&fl[]=identifier&fl[]=title&fl[]=creator&fl[]=year&sort[]=downloads+desc&rows=25&output=json"))
+            LibSource.BOOKS -> parseArchive(http.get("https://archive.org/advancedsearch.php?q=${enc("(${luceneSafe(q)}) AND mediatype:texts AND access-restricted-item:false")}&fl[]=identifier&fl[]=title&fl[]=creator&fl[]=year&sort[]=downloads+desc&rows=25&output=json"))
             LibSource.JOURNALS -> parseDoaj(http.get("https://doaj.org/api/search/articles/${enc(q)}?pageSize=25"))
         }
     }
+
+    /** Buang operator Lucene dari input pengguna (tanda kurung/kutip tak berpasangan membuat Internet Archive membalas galat). */
+    fun luceneSafe(q: String): String = q.replace(Regex("""[+\-&|!(){}\[\]^"~*?:\\/]"""), " ").replace(Regex("\\s+"), " ").trim().ifEmpty { "a" }
 
     fun parseArchive(json: String): List<LibItem> {
         val docs = JSONObject(json).optJSONObject("response")?.optJSONArray("docs") ?: return emptyList()
         return docs.objects().mapNotNull { d ->
             val id = d.optString("identifier").takeIf { it.matches(ID_RE) } ?: return@mapNotNull null     // hanya id aman (dipakai membentuk URL)
             LibItem(LibSource.BOOKS, id, d.optString("title", id).ifBlank { id }, d.flat("creator"), d.flat("year"), "", "https://archive.org/details/$id")
-        }.toList()
+        }.distinctBy { it.id }.toList()
     }
 
     fun parseDoaj(json: String): List<LibItem> {
@@ -85,8 +88,9 @@ object LibraryApi {
             val link = b.optJSONArray("link")?.objects()?.firstOrNull { it.optString("type") == "fulltext" }?.optString("url")
                 ?.takeIf { (it.startsWith("https://") || it.startsWith("http://")) && PublicHttp.publicHost(WebPolicy.hostOf(it) ?: "") } ?: return@mapNotNull null
             val authors = b.optJSONArray("author")?.objects()?.map { it.optString("name") }?.filter { it.isNotBlank() }?.joinToString(", ").orEmpty()
+            if (r.optString("id").isBlank() || b.optString("title").isBlank()) return@mapNotNull null
             LibItem(LibSource.JOURNALS, r.optString("id"), b.optString("title"), authors, b.optString("year"), b.optJSONObject("journal")?.optString("title").orEmpty(), link)
-        }.toList()
+        }.distinctBy { it.id }.toList()
     }
 
     /** Pilih satu file PDF dari metadata Internet Archive (yang terkecil di atas 10 KB, agar bukan sampul). Null bila tidak ada PDF. */
@@ -116,11 +120,16 @@ object PublicHttp {
         return true
     }
 
+    /** Alamat jaringan internal (loopback, privat, link-local) tidak boleh dijangkau walau namanya tampak publik. */
+    fun blockedAddress(a: java.net.InetAddress) = a.isLoopbackAddress || a.isSiteLocalAddress || a.isLinkLocalAddress || a.isAnyLocalAddress || a.isMulticastAddress ||
+        (a.address.size == 16 && (a.address[0].toInt() and 0xFE) == 0xFC)                                           // fc00::/7 (ULA)
+
     private fun open(start: String): HttpURLConnection {
         var url = start
         repeat(5) {
             val u = URL(url)
             if (u.protocol != "https" || !publicHost(u.host)) throw ApiError("Alamat tidak diizinkan: ${u.host}")
+            if (java.net.InetAddress.getAllByName(u.host).any { blockedAddress(it) }) throw ApiError("Alamat tidak diizinkan: ${u.host}")
             val c = u.openConnection() as HttpURLConnection
             c.instanceFollowRedirects = false; c.connectTimeout = 20_000; c.readTimeout = 60_000
             c.setRequestProperty("User-Agent", "MiniLMS/2.4"); c.setRequestProperty("Accept", "application/json,*/*")

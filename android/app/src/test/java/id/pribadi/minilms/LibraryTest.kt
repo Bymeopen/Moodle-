@@ -160,3 +160,42 @@ class PdfResolverTest {
         assertTrue(canViewInApp("s.pptx", null)); assertFalse(canViewInApp("old.doc", null)); assertFalse(canViewInApp("a.xlsx", null)); assertFalse(canViewInApp("a.zip", null))
     }
 }
+
+class AuditV28Test {
+    private val base = "https://lms.kampus.ac.id"
+
+    @Test fun luceneInputIsNeutralised() {
+        assertEquals("a", LibraryApi.luceneSafe("((\"::"))
+        assertEquals("manajemen keuangan", LibraryApi.luceneSafe("manajemen (keuangan"))
+        assertEquals("a b c", LibraryApi.luceneSafe("a+b-c"))
+    }
+
+    @Test fun duplicateResultsAreDropped() {
+        MoodleApi.htmlToText = { it }
+        val r = LibraryApi.parseArchive("""{"response":{"docs":[{"identifier":"x","title":"A"},{"identifier":"x","title":"A lagi"}]}}""")
+        assertEquals(1, r.size)
+        val d = LibraryApi.parseDoaj("""{"results":[{"id":"j","bibjson":{"title":"T","link":[{"type":"fulltext","url":"https://a.id/x"}]}},{"id":"j","bibjson":{"title":"T2","link":[{"type":"fulltext","url":"https://a.id/y"}]}},{"id":"","bibjson":{"title":"Kosong","link":[{"type":"fulltext","url":"https://a.id/z"}]}}]}""")
+        assertEquals(listOf("j"), d.map { it.id })
+    }
+
+    @Test fun internalAddressesBlocked() {
+        listOf("127.0.0.1", "10.1.2.3", "192.168.0.9", "169.254.169.254", "0.0.0.0", "::1", "fd00::1", "fe80::1").forEach {
+            assertTrue(it, PublicHttp.blockedAddress(java.net.InetAddress.getByName(it)))
+        }
+        assertFalse(PublicHttp.blockedAddress(java.net.InetAddress.getByName("93.184.216.34")))
+    }
+
+    @Test fun forumKeepsOldContentWhenForumListFails() {
+        MoodleApi.htmlToText = { it }
+        val old = Item(7, "forum", "Forum", "Minggu 1", "• Diskusi lama", null, null, emptyList(), "$base/mod/forum/view.php?id=7")
+        val prev = Snapshot(1, listOf(Course(11, "Algo", "", listOf(old), emptyList())), emptyList())
+        MoodleApi.transport = Transport { _, f -> when (f["wsfunction"]) {
+            "core_enrol_get_users_courses" -> """[{"id":11,"fullname":"Algo","shortname":"A"}]"""
+            "core_course_get_contents" -> """[{"name":"Minggu 1","modules":[{"id":7,"modname":"forum","name":"Forum","url":"$base/mod/forum/view.php?id=7"}]}]"""
+            "mod_assign_get_assignments" -> """{"courses":[]}"""; "mod_quiz_get_quizzes_by_courses" -> """{"quizzes":[]}"""; "mod_page_get_pages_by_courses" -> """{"pages":[]}"""
+            "gradereport_user_get_grade_items" -> """{"usergrades":[]}"""
+            else -> """{"exception":"x","message":"forum dimatikan"}""" } }
+        val it = MoodleApi.fetchAll(Site(base, "T", 1, "B", "S"), previous = prev).courses.single().items.single()
+        assertEquals("forum", it.type); assertEquals("• Diskusi lama", it.content)
+    }
+}

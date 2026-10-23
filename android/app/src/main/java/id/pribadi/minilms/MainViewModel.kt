@@ -173,7 +173,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    fun logout() { android.webkit.CookieManager.getInstance().removeAllCookies(null); autologinAt = 0; Jobs.pause(getApplication()); Jobs.scheduleReminders(getApplication(), false); repo.logout() }
+    fun logout() { android.webkit.CookieManager.getInstance().removeAllCookies(null); android.webkit.WebStorage.getInstance().deleteAllData(); autologinAt = 0; _web.value = null; _viewing.value = null; _playing.value = null; Jobs.pause(getApplication()); Jobs.scheduleReminders(getApplication(), false); repo.logout() }
     fun setReminders(on: Boolean) { repo.reminders = on; Jobs.scheduleReminders(getApplication(), on) }
     fun setWifiOnly(on: Boolean) { repo.wifiOnly = on }
     fun setTheme(m: ThemeMode) = repo.setTheme(m)
@@ -358,7 +358,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     val web: StateFlow<String?> = _web
     fun closeWeb() { _web.value = null }
     /** Buka tautan (YouTube, rekaman, dll.) di dalam aplikasi; hanya http(s). */
-    fun openInApp(url: String) { if (WebPolicy.hostOf(url) == null) { _message.value = "Tautan tidak didukung"; return }; _web.value = url }
+    fun openInApp(url: String) {
+        if (WebPolicy.hostOf(url) == null) { _message.value = "Tautan tidak didukung"; return }
+        _web.value = if (url.startsWith("http://")) "https://" + url.removePrefix("http://") else url        // lalu lintas teks biasa diblokir Android
+    }
 
     // ---------- sesi Moodle di WebView ----------
     private val _needReauth = MutableStateFlow(false)
@@ -380,7 +383,6 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             val fresh = System.currentTimeMillis() - autologinAt < SESSION_FRESH_MS
             val auto = if (fresh) null else withContext(Dispatchers.IO) { MoodleApi.autologinUrl(site, url) }
             if (auto != null) autologinAt = System.currentTimeMillis()
-            else if (!fresh) _message.value = "Login otomatis belum berhasil; tunggu beberapa menit lalu coba lagi"
             _web.value = auto ?: url
         }
     }

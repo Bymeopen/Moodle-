@@ -40,6 +40,7 @@ fun LibraryContent(
     var tab by rememberSaveable { mutableIntStateOf(0) }            // 0 cari, 1 tersimpan
     var q by rememberSaveable { mutableStateOf(st.query) }
     var delete by remember { mutableStateOf<LibSaved?>(null) }
+    LaunchedEffect(st.query) { if (st.query.isNotBlank() && q != st.query) q = st.query }      // kolom ikut topik yang dicari otomatis
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 8.dp, bottom = 28.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {

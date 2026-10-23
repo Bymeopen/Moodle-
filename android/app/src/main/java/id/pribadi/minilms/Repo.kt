@@ -21,7 +21,7 @@ class Repo private constructor(ctx: Context) {
     private val snapFile = File(app.filesDir, "snapshot.json")
     val root = File(app.filesDir, "courses")
 
-    private val _site = MutableStateFlow(prefs.getString("site", null)?.let { runCatching { JSONObject(it).toSite() }.getOrNull() })
+    private val _site = MutableStateFlow(loadSite())
     val site: StateFlow<Site?> = _site
     private val _snapshot = MutableStateFlow(loadSnapshot())
     val snapshot: StateFlow<Snapshot?> = _snapshot
@@ -77,12 +77,27 @@ class Repo private constructor(ctx: Context) {
         set(v) = prefs.edit().putBoolean("reminders", v).apply()
 
     // ---------- sesi ----------
-    fun saveSite(s: Site) { prefs.edit().putString("site", s.toJson().toString()).apply(); _site.value = s }
+    /** Token dan private token (bisa membuat sesi web penuh) disimpan terenkripsi Keystore; bila Keystore gagal, jatuh ke penyimpanan privat aplikasi. */
+    fun saveSite(s: Site) {
+        val json = s.toJson().toString()
+        try { SecretStore.put(app, "site", json); prefs.edit().remove("site").apply() }
+        catch (e: Exception) { prefs.edit().putString("site", json).apply() }
+        _site.value = s
+    }
+
+    private fun loadSite(): Site? {
+        val enc = try { SecretStore.get(app, "site") } catch (e: Exception) { null }
+        val raw = enc ?: prefs.getString("site", null) ?: return null
+        val site = runCatching { JSONObject(raw).toSite() }.getOrNull() ?: return null
+        if (enc == null) runCatching { SecretStore.put(app, "site", raw); prefs.edit().remove("site").apply() }      // migrasi dari versi lama
+        return site
+    }
 
     /** Keluar: hapus token, snapshot, dan semua file unduhan. */
     fun logout() {
         epoch++
         prefs.edit().clear().apply()
+        runCatching { SecretStore.remove(app, "site") }
         _done.value = emptySet()
         snapFile.delete(); cardsFile.delete(); _cards.value = emptyList(); root.deleteRecursively()
         File(app.filesDir, "chats").deleteRecursively()        // riwayat chat memuat isi materi kursus

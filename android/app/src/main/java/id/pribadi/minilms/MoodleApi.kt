@@ -320,6 +320,8 @@ object MoodleApi {
                             val text = forumText(site, forumByCm.getValue(id)) ?: prev?.items?.firstOrNull { it.id == id }?.content.orEmpty()
                             items += Item(id, "forum", name, sname, text, null, null, emptyList(), pageUrl)
                         }
+                        mod == "forum" && prev?.items?.any { it.id == id && it.type == "forum" } == true ->      // daftar forum gagal: pertahankan isi lama
+                            items += prev.items.first { it.id == id && it.type == "forum" }.copy(title = name, section = sname, url = pageUrl)
                         mod == "page" -> items += Item(id, "page", name, sname, htmlToText(pageByCm[id] ?: m.optString("description")), null, null, emptyList(), pageUrl)
                         mod == "label" -> htmlToText(m.optString("description")).takeIf { it.isNotEmpty() }?.let { t -> items += Item(id, "page", t.take(60), sname, t, null, null, emptyList()) }
                         else -> {
