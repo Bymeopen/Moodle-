@@ -16,6 +16,13 @@ Env: `PORT`, `DB_FILE` (default `data/lms.db`), `SECRET` (kunci token; set agar 
 - Item: halaman, tautan, tugas (kirim ulang, tenggat, penilaian + umpan balik), kuis pilihan ganda (auto-grade)
 - Buku nilai per kursus (guru: semua siswa, siswa: miliknya)
 
+## Belajar mandiri
+- Penanda "Selesai" per item + bar progres per kursus
+- Kartu hafalan dengan pengulangan berjarak (SM-2): tombol Lupa/Sulit/Bisa/Mudah, antrean review harian
+- Beranda: jumlah kartu jatuh tempo dan runtun hari belajar berturut-turut
+- AI (opsional): buat kartu dari materi kursus, ditinjau sebelum disimpan
+- `ALLOW_REGISTRATION=false` menutup pendaftaran setelah akun pertama (untuk server pribadi)
+
 ## Belum ada (dibanding Moodle)
 Upload file, forum, grup, backup, plugin, SCORM, notifikasi, rubrik, tipe soal lain, i18n.
 

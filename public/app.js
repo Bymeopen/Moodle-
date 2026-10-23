@@ -63,7 +63,11 @@ function authView() {
 async function homeView() {
   const courses = await api('GET', '/courses');
   const canCreate = me.role !== 'student';
+  const st = await api('GET', '/study/stats');
   show(
+    h('div', { className: 'card row between' },
+      h('div', {}, h('strong', {}, `🔥 ${st.streak} hari beruntun`), h('div', { className: 'muted' }, `${st.reviewed_today} kartu direview hari ini`)),
+      st.due ? h('button', { onclick: () => (location.hash = '#/review') }, `Review ${st.due} kartu`) : h('span', { className: 'muted' }, 'Tidak ada kartu jatuh tempo ✓')),
     canCreate && h('div', { className: 'card' }, h('h3', {}, 'Buat kursus'),
       form([['title', 'Judul'], ['description', 'Deskripsi', 'textarea']], 'Buat',
         async (v) => { const { id } = await api('POST', '/courses', v); location.hash = `#/course/${id}`; })),
@@ -88,6 +92,9 @@ async function courseView(id) {
       h('div', { className: 'row' }, h('a', { href: `#/grades/${id}` }, 'Buku nilai'),
         m && h('button', { className: 'danger', onclick: async () => { if (confirm('Hapus kursus?')) { await api('DELETE', `/courses/${id}`); location.hash = '#/'; } } }, 'Hapus'))),
     h('p', {}, course.description),
+    h('div', { className: 'card' }, h('div', { className: 'muted' }, `Progres: ${course.progress.done}/${course.progress.total} item selesai`),
+      h('progress', { value: course.progress.done, max: Math.max(course.progress.total, 1), style: 'width:100%' })),
+    cardsPanel(id),
     aiEnabled && tutorPanel(id),
     course.items.map((it) => itemCard(it, m)),
     m && aiEnabled && aiQuizPanel(id),
@@ -120,8 +127,62 @@ function itemCard(it, manage) {
   }
   return h('div', { className: 'card' },
     h('div', { className: 'row between' }, h('div', {}, h('span', { className: 'badge' }, it.type), ' ', h('strong', {}, it.title)),
-      manage && h('button', { className: 'ghost', onclick: async () => { await api('DELETE', `/items/${it.id}`); reload(); } }, 'Hapus')),
+      h('div', { className: 'row' },
+        h('label', { className: 'muted', style: 'white-space:nowrap' }, h('input', { type: 'checkbox', checked: it.completed, style: 'width:auto;margin:0 4px 0 0',
+          onchange: async (e) => { await api('POST', `/items/${it.id}/complete`, { done: e.target.checked }); reload(); } }), 'Selesai'),
+        manage && h('button', { className: 'ghost', onclick: async () => { await api('DELETE', `/items/${it.id}`); reload(); } }, 'Hapus'))),
     body);
+}
+
+function cardsPanel(courseId) {
+  const front = h('input', { placeholder: 'Depan (pertanyaan)' });
+  const back = h('input', { placeholder: 'Belakang (jawaban)' });
+  const list = h('div');
+  const draft = h('div');
+  const load = async () => {
+    const cards = await api('GET', `/courses/${courseId}/cards`);
+    list.replaceChildren(h('div', { className: 'muted' }, `${cards.length} kartu`), ...cards.map((c) => h('div', { className: 'row between' },
+      h('span', {}, `${c.front} → ${c.back}`), h('button', { className: 'ghost', onclick: async () => { await api('DELETE', `/cards/${c.id}`); load(); } }, '×'))));
+  };
+  load();
+  const aiBtn = aiEnabled && h('button', { className: 'ghost', onclick: async () => {
+    draft.replaceChildren(h('span', { className: 'muted' }, 'Membuat kartu…'));
+    try {
+      const { cards } = await api('POST', `/courses/${courseId}/ai/cards`, { count: 10 });
+      draft.replaceChildren(h('ol', {}, cards.map((c) => h('li', {}, `${c.front} → ${c.back}`))),
+        h('button', { onclick: async () => { await api('POST', `/courses/${courseId}/cards`, { cards }); draft.replaceChildren(); load(); } }, 'Simpan semua'),
+        h('span', { className: 'muted' }, ' Tinjau dulu; belum tersimpan.'));
+    } catch (e) { draft.replaceChildren(h('div', { className: 'error' }, e.message)); }
+  } }, 'Buat kartu dengan AI');
+  return h('div', { className: 'card' }, h('div', { className: 'row between' }, h('strong', {}, 'Kartu hafalan'),
+    h('button', { className: 'ghost', onclick: () => (location.hash = `#/review/${courseId}`) }, 'Mulai review')),
+    front, back, h('div', { className: 'row' }, h('button', { onclick: async () => {
+      if (!front.value.trim() || !back.value.trim()) return;
+      await api('POST', `/courses/${courseId}/cards`, { front: front.value, back: back.value }); front.value = back.value = ''; load();
+    } }, 'Tambah kartu'), aiBtn), draft, list);
+}
+
+async function reviewView(courseId) {
+  const queue = await api('GET', `/cards/due${courseId ? `?course=${courseId}` : ''}`);
+  const back = h('a', { href: courseId ? `#/course/${courseId}` : '#/' }, '← Kembali');
+  let done = 0;
+  const next = () => {
+    if (!queue.length) return show(back, h('div', { className: 'card' }, h('h2', {}, 'Selesai 🎉'), h('p', {}, `${done} kartu direview. Sampai jumpa besok!`)));
+    const card = queue[0];
+    const answer = h('div', { style: 'display:none' });
+    const rate = (rating, label) => h('button', { className: rating === 'again' ? 'danger' : '', onclick: async () => {
+      const r = await api('POST', `/cards/${card.id}/review`, { rating });
+      queue.shift(); done += 1;
+      if (r.interval === 0) queue.push(card); // lupa: muncul lagi di sesi ini
+      next();
+    } }, label);
+    answer.append(h('hr'), h('p', { style: 'white-space:pre-wrap' }, card.back), h('div', { className: 'row' },
+      rate('again', 'Lupa'), rate('hard', 'Sulit'), rate('good', 'Bisa'), rate('easy', 'Mudah')));
+    const reveal = h('button', { onclick: () => { answer.style.display = 'block'; reveal.style.display = 'none'; } }, 'Tampilkan jawaban');
+    show(back, h('div', { className: 'muted' }, `Sisa ${queue.length} · ${card.course}`),
+      h('div', { className: 'card' }, h('h3', { style: 'white-space:pre-wrap' }, card.front), reveal, answer));
+  };
+  next();
 }
 
 function tutorPanel(courseId) {
@@ -219,6 +280,7 @@ async function route() {
     if (page === 'course') await courseView(arg);
     else if (page === 'submissions') await submissionsView(arg);
     else if (page === 'grades') await gradesView(arg);
+    else if (page === 'review') await reviewView(arg);
     else if (page === 'users' && me.role === 'admin') await usersView();
     else await homeView();
   } catch (e) { show(h('div', { className: 'error' }, e.message)); }
