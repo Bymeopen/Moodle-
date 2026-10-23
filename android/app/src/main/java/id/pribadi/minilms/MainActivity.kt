@@ -237,6 +237,7 @@ fun CourseScreen(vm: MainViewModel, c: Course, onBack: () -> Unit) {
                     Button({ if (dl.running) vm.pause() else vm.downloadCourse(c.id) }, enabled = dl.running || stats.downloaded < stats.files) { Text(if (dl.running) "Jeda unduhan" else "Unduh kursus ini") }
                     if (stats.downloaded > 0) OutlinedButton({ vm.deleteDownloads(c.id) }) { Text("Hapus unduhan") }
                 }
+                OutlinedButton({ vm.shareToNotebook(c) }) { Text("Kirim ke NotebookLM") }
             }
         }
         sections.forEach { (name, list) ->

@@ -54,6 +54,7 @@ Catatan keamanan: jawaban siswa dan materi dikirim sebagai data (dibungkus tag, 
 - Login SSO/Google otomatis: aplikasi membuka tautan resmi `launch.php` dan menangkap callback `moodlemobile://token=...` (tanda tangan md5(url+passport) diverifikasi). Alternatif: tempel token, atau username+password.
 - Tab Kursus: kartu kursus dengan progres unduhan, **Unduh semua** (WorkManager + notifikasi progres, jeda/lanjut, opsi hanya Wi-Fi), detail kursus per bagian, buka file dengan aplikasi PDF/dokumen bawaan.
 - Tab **AI** (Claude, kunci API milik Anda, disimpan terenkripsi di Android Keystore): chat tutor (opsional dengan konteks kursus), ringkasan, soal latihan pilihan ganda, dan kartu hafalan dengan review SM-2. Hasil AI ditinjau dulu sebelum disimpan. Claude tidak punya login SSO untuk aplikasi pihak ketiga, jadi aksesnya lewat kunci API (Claude Code adalah alat terminal dan tidak berjalan di dalam aplikasi).
+- **Kirim ke NotebookLM** (detail kursus): menyiapkan ringkasan teks kursus (.md) + file yang sudah diunduh, lalu membuka menu bagikan Android; pilih NotebookLM atau Google Drive (maks 50 sumber). NotebookLM pribadi tidak punya API publik, jadi tidak ada unggah otomatis.
 - Tab Tenggat, Nilai, dan Lainnya (penyimpanan, hapus unduhan, pengingat tenggat 24 jam, keluar).
 - Semua data di penyimpanan privat aplikasi. Token tidak dikirim lewat URL; file hanya diunduh dari host Moodle yang sama.
 

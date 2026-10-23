@@ -18,6 +18,8 @@ import kotlinx.coroutines.withContext
 data class DlState(val running: Boolean = false, val done: Int = 0, val total: Int = 0, val name: String = "", val bytes: Long = 0, val bytesTotal: Long = 0,
                    val failed: Int = 0, val error: String = "")
 
+const val NOTEBOOK_MAX_SOURCES = 50
+
 class MainViewModel(app: Application) : AndroidViewModel(app) {
     val repo = Repo.get(app)
     val site = repo.site
@@ -102,6 +104,28 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         try {
             ctx.startActivity(Intent(Intent.ACTION_VIEW).setDataAndType(uri, mime).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK))
         } catch (e: ActivityNotFoundException) { _message.value = "Tidak ada aplikasi untuk membuka file ini" }
+    }
+
+    /**
+     * Bagikan materi kursus (ringkasan teks .md + file yang sudah diunduh) lewat menu bagikan Android,
+     * supaya bisa ditambahkan sebagai sumber di NotebookLM (atau Google Drive). NotebookLM membatasi jumlah sumber per notebook.
+     */
+    fun shareToNotebook(c: Course) {
+        val ctx = getApplication<Application>()
+        val md = java.io.File(repo.root, "${c.id}/${safeName(c.name)}.md").apply { parentFile!!.mkdirs(); writeText(AiMaterial.build(c)) }
+        val files = c.items.flatMap { i -> i.files.filter { repo.isDownloaded(c.id, i.id, it) }.map { repo.fileOf(c.id, i.id, it) } }
+        val all = listOf(md) + files
+        val sent = all.take(NOTEBOOK_MAX_SOURCES)
+        val uris = ArrayList(sent.map { FileProvider.getUriForFile(ctx, "${ctx.packageName}.files", it) })
+        val send = Intent(Intent.ACTION_SEND_MULTIPLE).setType("*/*").putParcelableArrayListExtra(Intent.EXTRA_STREAM, uris)
+            .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        // clipData diperlukan agar izin baca ikut diteruskan ke aplikasi tujuan lewat chooser
+        send.clipData = android.content.ClipData.newRawUri(null, uris[0]).also { cd -> uris.drop(1).forEach { cd.addItem(android.content.ClipData.Item(it)) } }
+        try {
+            ctx.startActivity(Intent.createChooser(send, "Kirim ke NotebookLM / Drive").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+            if (all.size > sent.size) _message.value = "Hanya $NOTEBOOK_MAX_SOURCES sumber pertama yang dikirim (batas NotebookLM)"
+            else if (files.isEmpty()) _message.value = "Hanya ringkasan teks yang dikirim; unduh file kursus dulu untuk menyertakan PDF/slide"
+        } catch (e: ActivityNotFoundException) { _message.value = "Tidak ada aplikasi untuk menerima file" }
     }
 
     fun openLink(url: String) {
