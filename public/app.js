@@ -41,13 +41,10 @@ const form = (fields, submitLabel, onSubmit) => {
 };
 const show = (...nodes) => $app.replaceChildren(...nodes.flat().filter((n) => n != null && n !== false));
 
-// unduh file via fetch (butuh header Authorization, jadi tidak bisa pakai <a href> biasa)
-async function saveFile(id, name) {
-  const res = await fetch(`/api/files/${id}`, { headers: { authorization: `Bearer ${token}` } });
-  if (!res.ok) throw new Error((await res.json()).error || 'Gagal mengunduh');
-  const a = h('a', { href: URL.createObjectURL(await res.blob()), download: name });
-  a.click();
-  URL.revokeObjectURL(a.href);
+// unduh via tiket sekali pakai; navigasi biasa sehingga jalan juga di WebView aplikasi Android (DownloadListener)
+async function saveFile(id) {
+  const { url } = await api('POST', `/files/${id}/ticket`);
+  location.href = url;
 }
 
 // ---------- nav & auth ----------
@@ -124,7 +121,7 @@ function itemCard(it, manage) {
   if (it.files?.length) {
     body.push(h('div', {}, it.files.map((f) => h('div', { className: 'row' },
       h('span', {}, `📄 ${f.name}`), f.size != null && h('span', { className: 'muted' }, `${(f.size / 1024).toFixed(0)} KB`),
-      f.downloaded ? h('button', { className: 'ghost', onclick: () => saveFile(f.id, f.name).catch((e) => alert(e.message)) }, 'Simpan') : h('span', { className: 'muted' }, 'belum diunduh')))));
+      f.downloaded ? h('button', { className: 'ghost', onclick: () => saveFile(f.id).catch((e) => alert(e.message)) }, 'Simpan') : h('span', { className: 'muted' }, 'belum diunduh')))));
   }
   if (it.type === 'link') body.push(h('a', { href: /^https?:\/\//.test(it.content) ? it.content : '#', target: '_blank', rel: 'noopener' }, it.content));
   if (it.type === 'assignment') {

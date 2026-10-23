@@ -47,3 +47,13 @@ Aktif bila `ANTHROPIC_API_KEY` di-set (model default `claude-opus-5-5`, ubah via
 | Tutor tanya-jawab berdasar materi kursus | siswa/guru | `POST /api/courses/:id/ai/ask` |
 
 Catatan keamanan: jawaban siswa dan materi dikirim sebagai data (dibungkus tag, system prompt melarang mengikuti instruksi di dalamnya); output model divalidasi ulang di server; nilai dibatasi ke `max_grade`.
+
+## Aplikasi Android (APK)
+`android/` berisi pembungkus WebView tanpa dependensi (hanya framework Android). APK hanyalah klien: **server tetap harus berjalan** (`npm start` di PC/VPS) dan bisa dijangkau dari ponsel. Pada pembukaan pertama, isi alamat server (mis. `http://192.168.1.10:3000`); ganti lewat menu titik tiga → "Ganti server".
+
+Build (butuh JDK 17+, Gradle 8.x, Android SDK platform 34 + build-tools 34):
+```bash
+cd android && echo "sdk.dir=$HOME/android-sdk" > local.properties
+gradle assembleDebug     # hasil: app/build/outputs/apk/debug/app-debug.apk
+```
+APK debug ditandatangani kunci debug lokal; membangun ulang di mesin lain memakai kunci berbeda sehingga pembaruan di atas versi lama harus uninstall dulu. Unduhan file memakai tiket sekali pakai dan tersimpan di folder Unduhan ponsel. `usesCleartextTraffic` aktif agar server `http://` di LAN bisa dipakai; gunakan HTTPS bila server di internet.

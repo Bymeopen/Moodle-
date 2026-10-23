@@ -92,4 +92,15 @@ test('sinkron mencatat file; unduh aman; sajikan ke pemilik saja', async () => {
   const other = (await call('POST', '/api/auth/register', { name: 'C', email: 'c@x.id', password: 'password123' })).body.token;
   assert.equal((await call('GET', `/api/files/${files[0].id}`, null, other)).status, 404);
   assert.equal((await call('GET', `/api/files/${files[0].id}`)).status, 401);
+
+  // tiket: sekali pakai, hanya untuk file yang diminta, tidak bisa dipakai pengguna lain untuk membuat tiket
+  assert.equal((await call('POST', `/api/files/${files[0].id}/ticket`, null, other)).status, 404);
+  const { url } = (await call('POST', `/api/files/${files[0].id}/ticket`, null, t)).body;
+  const first = await fetch(base + url);
+  assert.equal(first.status, 200);
+  assert.match(first.headers.get('content-disposition'), /slide\.pdf/);
+  assert.equal(await first.text(), '%PDF-');
+  assert.equal((await fetch(base + url)).status, 401); // tiket habis
+  const { url: url2 } = (await call('POST', `/api/files/${files[0].id}/ticket`, null, t)).body;
+  assert.equal((await fetch(base + url2.replace(`/files/${files[0].id}`, `/files/${files[1].id}`))).status, 401); // beda file
 });

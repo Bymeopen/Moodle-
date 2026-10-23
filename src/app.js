@@ -4,6 +4,7 @@ import { createAi } from './ai.js';
 import { review, ratings, toDay, addDays } from './srs.js';
 import { MoodleClient, MoodleError, normalizeBaseUrl, requestToken, fetchAll, downloadFile, safeName } from './moodle.js';
 import { resolve, join, sep } from 'node:path';
+import { randomBytes } from 'node:crypto';
 import { existsSync } from 'node:fs';
 
 class HttpError extends Error {
@@ -408,10 +409,35 @@ export function createApp(db, { ai = createAi() } = {}) {
     res.json(out);
   }));
 
-  // kirim file yang sudah diunduh ke browser (hanya pemilik kursus)
-  app.get('/api/files/:id', auth, route((req, res) => {
-    const f = q(`SELECT f.name, f.local_path FROM item_files f JOIN items i ON i.id = f.item_id JOIN courses c ON c.id = i.course_id
-                 WHERE f.id = ? AND c.teacher_id = ?`).get(req.params.id, req.user.id) ?? fail(404, 'File tidak ditemukan');
+  // Tiket unduhan sekali pakai (60 dtk): WebView/aplikasi tidak bisa mengirim header Authorization pada navigasi unduhan,
+  // jadi klien meminta tiket lewat API ber-auth lalu membuka URL bertiket. Tiket tidak memberi akses lain.
+  const tickets = new Map();
+  const issueTicket = (fileId, userId) => {
+    const now = Date.now();
+    for (const [k, v] of tickets) if (v.exp < now) tickets.delete(k); // bersihkan yang kedaluwarsa
+    const t = randomBytes(24).toString('base64url');
+    tickets.set(t, { fileId: String(fileId), userId, exp: now + 60_000 });
+    return t;
+  };
+  const ownedFile = (fileId, userId) => q(`SELECT f.name, f.local_path FROM item_files f JOIN items i ON i.id = f.item_id JOIN courses c ON c.id = i.course_id
+                 WHERE f.id = ? AND c.teacher_id = ?`).get(fileId, userId) ?? fail(404, 'File tidak ditemukan');
+
+  app.post('/api/files/:id/ticket', auth, route((req, res) => {
+    ownedFile(req.params.id, req.user.id);
+    res.json({ url: `/api/files/${Number(req.params.id)}?ticket=${issueTicket(req.params.id, req.user.id)}` });
+  }));
+
+  // kirim file yang sudah diunduh (pemilik kursus; lewat Authorization atau tiket sekali pakai)
+  const fileAuth = (req, res, next) => {
+    if (typeof req.query.ticket !== 'string') return auth(req, res, next);
+    const t = tickets.get(req.query.ticket);
+    tickets.delete(req.query.ticket); // sekali pakai
+    if (!t || t.exp < Date.now() || t.fileId !== req.params.id) return next(new HttpError(401, 'Tiket tidak valid atau kedaluwarsa'));
+    req.user = { id: t.userId };
+    next();
+  };
+  app.get('/api/files/:id', fileAuth, route((req, res) => {
+    const f = ownedFile(req.params.id, req.user.id);
     if (!f.local_path || !existsSync(f.local_path) || !f.local_path.startsWith(FILES_DIR + sep)) fail(404, 'File belum diunduh');
     res.download(f.local_path, f.name);
   }));
