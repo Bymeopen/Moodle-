@@ -269,10 +269,72 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun hasCrash(): Boolean = CrashLog.last(getApplication()) != null
     fun clearCrash() = CrashLog.clear(getApplication())
 
+    // ---------- perpustakaan online gratis ----------
+    data class LibState(
+        val source: LibSource = LibSource.BOOKS, val query: String = "", val results: List<LibItem> = emptyList(), val searching: Boolean = false,
+        val searched: Boolean = false, val error: String? = null, val saved: List<LibSaved> = emptyList(),
+        val downloading: Map<String, Float> = emptyMap(),      // id -> 0..1 (-1 = belum diketahui)
+    )
+    private val libStore = LibraryStore(java.io.File(getApplication<Application>().filesDir, "library"))
+    private val _lib = MutableStateFlow(LibState())
+    val library: StateFlow<LibState> = _lib
+    private var libJob: kotlinx.coroutines.Job? = null
+
+    fun libraryLoad() { viewModelScope.launch { val l = withContext(Dispatchers.IO) { libStore.list() }; _lib.update { it.copy(saved = l) } } }
+    fun librarySource(s: LibSource) { _lib.update { it.copy(source = s, results = emptyList(), searched = false, error = null) } }
+
+    fun librarySearch(q: String) {
+        libJob?.cancel()
+        val src = _lib.value.source
+        _lib.update { it.copy(query = q, searching = true, error = null) }
+        libJob = viewModelScope.launch {
+            val r = try { withContext(Dispatchers.IO) { LibraryApi.search(src, q) } }
+                catch (e: kotlinx.coroutines.CancellationException) { throw e }
+                catch (e: Exception) { _lib.update { it.copy(searching = false, error = "Pencarian gagal: ${e.message ?: "periksa internet"}") }; return@launch }
+            _lib.update { it.copy(results = r, searching = false, searched = true) }
+        }
+    }
+
+    /** Unduh PDF buku Internet Archive ke penyimpanan lokal. */
+    fun libraryDownload(item: LibItem) {
+        if (item.source != LibSource.BOOKS || item.id in _lib.value.downloading) return
+        _lib.update { it.copy(downloading = it.downloading + (item.id to -1f)) }
+        viewModelScope.launch {
+            try {
+                withContext(Dispatchers.IO) {
+                    val (name, size) = LibraryApi.pdfFor(item.id) ?: throw ApiError("Buku ini tidak punya PDF yang bisa diunduh; buka di browser")
+                    val dest = java.io.File(java.io.File(getApplication<Application>().filesDir, "library"), safeName("${item.id}.pdf"))
+                    PublicHttp.download(LibraryApi.downloadUrl(item.id, name), dest, 500L * 1024 * 1024, { false }) { b -> if (size > 0) _lib.update { it.copy(downloading = it.downloading + (item.id to (b.toFloat() / size).coerceIn(0f, 1f))) } }
+                    libStore.add(LibSaved(item.id, item.title, item.author, dest.name, dest.length()))
+                }
+                _message.value = "Tersimpan: ${item.title}"
+            } catch (e: kotlinx.coroutines.CancellationException) { throw e }
+            catch (e: Exception) { _message.value = "Gagal mengunduh: ${e.message}" }
+            _lib.update { it.copy(downloading = it.downloading - item.id) }
+            libraryLoad()
+        }
+    }
+
+    fun libraryDelete(s: LibSaved) { viewModelScope.launch { withContext(Dispatchers.IO) { libStore.remove(s.id) }; libraryLoad() } }
+
+    fun libraryOpen(s: LibSaved) {
+        val ctx = getApplication<Application>()
+        val uri = try { FileProvider.getUriForFile(ctx, "${ctx.packageName}.files", libStore.fileOf(s)) } catch (e: IllegalArgumentException) { _message.value = "File tidak bisa dibuka"; return }
+        try { ctx.startActivity(Intent(Intent.ACTION_VIEW).setDataAndType(uri, "application/pdf").addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)) }
+        catch (e: ActivityNotFoundException) { _message.value = "Tidak ada aplikasi pembuka PDF" }
+    }
+
     /** Video yang sedang diputar di dalam aplikasi (file unduhan lokal); null = tidak ada. */
     private val _playing = MutableStateFlow<java.io.File?>(null)
     val playing: StateFlow<java.io.File?> = _playing
     fun stopPlaying() { _playing.value = null }
+
+    /** Halaman web yang sedang dibuka di dalam aplikasi (WebView); null = tidak ada. */
+    private val _web = MutableStateFlow<String?>(null)
+    val web: StateFlow<String?> = _web
+    fun closeWeb() { _web.value = null }
+    /** Buka tautan (YouTube, rekaman, dll.) di dalam aplikasi; hanya http(s). */
+    fun openInApp(url: String) { if (WebPolicy.hostOf(url) == null) { _message.value = "Tautan tidak didukung"; return }; _web.value = url }
 
     /** Buka halaman Moodle (tes, tugas, forum, dll.) sudah login lewat kunci autologin; bila tak bisa, buka URL biasa. */
     fun openMoodle(url: String) {
@@ -281,7 +343,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             val target = withContext(Dispatchers.IO) { MoodleApi.autologinUrl(site, url) } ?: url
             if (target == url) _message.value = "Membuka tanpa login otomatis; masuk ulang bila diminta"
-            openWeb(target)
+            _web.value = target
         }
     }
 

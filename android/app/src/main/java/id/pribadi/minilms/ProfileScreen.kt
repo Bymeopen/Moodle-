@@ -27,13 +27,13 @@ data class ProfileState(
 )
 
 class ProfileActions(
-    val onGrades: () -> Unit = {}, val onReview: () -> Unit = {}, val onOpenWeb: (String) -> Unit = {}, val onSync: () -> Unit = {}, val onWifiOnly: (Boolean) -> Unit = {},
+    val onGrades: () -> Unit = {}, val onReview: () -> Unit = {}, val onLibrary: () -> Unit = {}, val onOpenWeb: (String) -> Unit = {}, val onSync: () -> Unit = {}, val onWifiOnly: (Boolean) -> Unit = {},
     val onReminders: (Boolean) -> Unit = {}, val onTheme: (ThemeMode) -> Unit = {}, val onDeleteDownloads: () -> Unit = {}, val onModel: (String) -> Unit = {},
     val onDiagnostics: () -> Unit = {}, val onClearCrash: () -> Unit = {}, val onProvider: (Provider) -> Unit = {}, val onSaveKey: (Provider, String) -> Unit = { _, _ -> }, val onClearKey: (Provider) -> Unit = {}, val onLogout: () -> Unit = {},
 )
 
 @Composable
-fun ProfileScreen(vm: MainViewModel, onGrades: () -> Unit, onReview: () -> Unit = {}) {
+fun ProfileScreen(vm: MainViewModel, onGrades: () -> Unit, onReview: () -> Unit = {}, onLibrary: () -> Unit = {}) {
     val site by vm.site.collectAsStateWithLifecycle(); val snap by vm.snapshot.collectAsStateWithLifecycle(); val tick by vm.tick.collectAsStateWithLifecycle()
     val theme by vm.theme.collectAsStateWithLifecycle(); val cards by vm.cards.collectAsStateWithLifecycle()
     val model by vm.ai.model.collectAsStateWithLifecycle(); val keys by vm.ai.keys.collectAsStateWithLifecycle(); val provider by vm.ai.provider.collectAsStateWithLifecycle()
@@ -41,7 +41,7 @@ fun ProfileScreen(vm: MainViewModel, onGrades: () -> Unit, onReview: () -> Unit 
     var wifi by remember { mutableStateOf(vm.repo.wifiOnly) }; var remind by remember { mutableStateOf(vm.repo.reminders) }
     val used = remember(tick) { vm.repo.storageUsed() }
     val st = ProfileState(site?.fullName.orEmpty(), site?.siteName.orEmpty(), site?.url.orEmpty(), snap?.syncedAt, System.currentTimeMillis() / 1000, wifi, remind, theme, used, cards.size, provider, model, keys, usage, vm.versionName(), vm.hasCrash())
-    ProfileContent(st, ProfileActions(onGrades, onReview, vm::openWeb, { vm.sync() }, { wifi = it; vm.setWifiOnly(it) }, { remind = it; vm.setReminders(it) }, vm::setTheme,
+    ProfileContent(st, ProfileActions(onGrades, onReview, onLibrary, vm::openWeb, { vm.sync() }, { wifi = it; vm.setWifiOnly(it) }, { remind = it; vm.setReminders(it) }, vm::setTheme,
         { vm.deleteDownloads() }, { vm.ai.setModel(it) }, vm::shareDiagnostics, vm::clearCrash, vm.ai::setProvider, { p, k -> vm.ai.setKey(k, p) }, { vm.ai.clearKey(it) }, vm::logout))
 }
 
@@ -78,6 +78,7 @@ fun ProfileContent(s: ProfileState, a: ProfileActions) {
 
         Group("Belajar") {
             Row2(Icons.Rounded.Insights, "Nilai saya", "Ringkasan per kursus", cs.primary, onClick = a.onGrades) { Chevron() }
+            Row2(Icons.Rounded.LocalLibrary, "Perpustakaan", "Buku & jurnal gratis", cs.tertiary, onClick = a.onLibrary) { Chevron() }
             Row2(Icons.Rounded.Style, "Kartu hafalan", "${s.cardsTotal} kartu", cs.secondary, onClick = a.onReview) { Chevron() }
         }
         Group("Aplikasi AI resmi (login SSO / Google)") {

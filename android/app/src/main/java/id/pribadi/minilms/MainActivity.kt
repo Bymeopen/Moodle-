@@ -86,7 +86,7 @@ private val dests = listOf(
 @Composable
 fun MainScreen(vm: MainViewModel) {
     var tab by rememberSaveable { mutableIntStateOf(0) }
-    var overlay by rememberSaveable { mutableStateOf("") }            // "", "course:ID", "grades", "review"
+    var overlay by rememberSaveable { mutableStateOf("") }            // "", "course:ID", "grades", "review", "library"
     var query by rememberSaveable { mutableStateOf("") }
     var filter by rememberSaveable { mutableStateOf(CourseFilter.ALL) }
     var showDone by rememberSaveable { mutableStateOf(false) }
@@ -99,6 +99,7 @@ fun MainScreen(vm: MainViewModel) {
     val dl by vm.download.collectAsStateWithLifecycle()
     val tick by vm.tick.collectAsStateWithLifecycle()
     val playing by vm.playing.collectAsStateWithLifecycle()
+    val web by vm.web.collectAsStateWithLifecycle()
     val done by vm.doneAssignments.collectAsStateWithLifecycle()
     val cards by vm.cards.collectAsStateWithLifecycle()
     val hasKey by vm.ai.hasKey.collectAsStateWithLifecycle()
@@ -115,6 +116,7 @@ fun MainScreen(vm: MainViewModel) {
     LaunchedEffect(Unit) { if (Build.VERSION.SDK_INT >= 33 && !Notif.canPost(vm.getApplication()) && !vm.repo.askedNotif) { vm.repo.askedNotif = true; perm.launch(Manifest.permission.POST_NOTIFICATIONS) } }
 
     playing?.let { VideoPlayerDialog(it, vm::stopPlaying) }
+    web?.let { u -> androidx.compose.ui.window.Dialog(vm::closeWeb, androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)) { Surface(Modifier.fillMaxSize()) { Column(Modifier.statusBarsPadding()) { MoodleWebScreen(u, vm::closeWeb, vm::openLink) } } } }
     BackHandler(enabled = overlay.isNotEmpty() || tab != 0) { if (overlay.isNotEmpty()) overlay = "" else tab = 0 }
 
     val course = if (overlay.startsWith("course:")) courses.firstOrNull { it.id == overlay.removePrefix("course:").toLongOrNull() } else null
@@ -125,18 +127,19 @@ fun MainScreen(vm: MainViewModel) {
         Box(Modifier.weight(1f)) {
             when {
                 overlay == "review" -> ReviewScreen(vm) { overlay = "" }
+                overlay == "library" -> LibraryScreen(vm) { overlay = "" }
                 overlay == "grades" -> Column { BackBar("Nilai") { overlay = "" }; GradesScreen(courses) }
                 course != null -> CourseDetailScreen(vm, course, stats[course.id] ?: Repo.CourseStats(0, 0, 0, 0), onBack = { overlay = "" }, onAskAi = { askAi(course.id, it) })
                 else -> when (tab) {
                     0 -> PullToRefreshBox(busy, { vm.sync() }) {
                         HomeScreen(site?.fullName.orEmpty(), snap, stats, dl, online, busy, syncError, done, dueCards, hasKey, nowSec, Calendar.getInstance().get(Calendar.HOUR_OF_DAY),
                             onSync = { vm.sync() }, onOpenCourse = openCourse, onDeadlines = { tab = 2 }, onCourses = { tab = 1 }, onGrades = { overlay = "grades" },
-                            onDownloadAll = vm::downloadAll, onPause = vm::pause, onReview = { overlay = "review" }, onAskAi = { askAi(null, AiMode.CHAT) })
+                            onDownloadAll = vm::downloadAll, onPause = vm::pause, onReview = { overlay = "review" }, onAskAi = { askAi(null, AiMode.CHAT) }, onLibrary = { overlay = "library" })
                     }
                     1 -> PullToRefreshBox(busy, { vm.sync() }) { CoursesScreen(snap, stats, busy, query, filter, { query = it }, { filter = it }, openCourse) }
                     2 -> DeadlinesScreen(rows, done, nowSec, showDone, { showDone = it }, vm::toggleDone, openCourse)
                     3 -> AiScreen(vm, onReview = { overlay = "review" })
-                    else -> ProfileScreen(vm, onGrades = { overlay = "grades" }, onReview = { overlay = "review" })
+                    else -> ProfileScreen(vm, onGrades = { overlay = "grades" }, onReview = { overlay = "review" }, onLibrary = { overlay = "library" })
                 }
             }
         }

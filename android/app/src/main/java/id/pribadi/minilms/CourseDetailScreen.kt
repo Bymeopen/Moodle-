@@ -35,7 +35,7 @@ fun CourseDetailScreen(vm: MainViewModel, c: Course, st: Repo.CourseStats, onBac
     CourseDetailContent(c, st, nowSec, done, dl, progress,
         isDownloaded = { i, f -> tick >= 0 && vm.repo.isDownloaded(c.id, i.id, f) }, fileKey = { i, f -> vm.repo.fileKey(c.id, i.id, f) },
         onBack = onBack, onDownloadCourse = { vm.downloadCourse(c.id) }, onPause = vm::pause, onDeleteDownloads = { vm.deleteDownloads(c.id) },
-        onOpenFile = { i, f -> vm.open(c, i, f) }, onDownloadFile = { i, f -> vm.downloadFile(c, i, f) }, onLink = vm::openLink, onOpenMoodle = vm::openMoodle, onToggleDone = vm::toggleDone,
+        onOpenFile = { i, f -> vm.open(c, i, f) }, onDownloadFile = { i, f -> vm.downloadFile(c, i, f) }, onLink = vm::openInApp, onOpenMoodle = vm::openMoodle, onToggleDone = vm::toggleDone,
         onAskAi = onAskAi, onExportZip = { zip.launch("${safeName(c.name)}.zip") }, onShareNotebook = { vm.shareToNotebook(c) }, onOpenWeb = vm::openWeb)
 }
 
@@ -164,20 +164,21 @@ private fun MaterialCard(it: Item, isDownloaded: (Item, FileRef) -> Boolean, fil
                          onOpenFile: (Item, FileRef) -> Unit, onDownloadFile: (Item, FileRef) -> Unit, onLink: (String) -> Unit, onOpenMoodle: (String) -> Unit) {
     var open by rememberSaveable(it.id) { mutableStateOf(false) }
     val cs = MaterialTheme.colorScheme
-    val hasText = it.type == "page" && it.content.isNotBlank()
+    val hasText = (it.type == "page" || it.type == "forum") && it.content.isNotBlank()
     Card2(Modifier.fillMaxWidth().padding(horizontal = 20.dp).animateContentSize(), if (hasText) ({ open = !open }) else null) {
         Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                IconBadge(if (it.type == "page") Icons.Rounded.Article else Icons.Rounded.Link, if (it.type == "page") cs.tertiary else cs.primary, size = 36.dp)
+                IconBadge(when (it.type) { "page" -> Icons.Rounded.Article; "forum" -> Icons.Rounded.Forum; else -> Icons.Rounded.Link }, if (it.type == "page" || it.type == "forum") cs.tertiary else cs.primary, size = 36.dp)
                 Text(it.title, Modifier.weight(1f), style = MaterialTheme.typography.titleSmall, maxLines = 3, overflow = TextOverflow.Ellipsis)
                 if (hasText) Icon(if (open) Icons.Rounded.ExpandLess else Icons.Rounded.ExpandMore, null, tint = cs.outline)
-                else if (it.type == "link" && it.files.isEmpty() && it.content.startsWith("http")) IconButton({ onLink(it.content) }) { Icon(Icons.Rounded.OpenInNew, "Buka di browser", tint = cs.primary) }
+                else if (it.type == "link" && it.files.isEmpty() && it.content.startsWith("http")) IconButton({ onLink(it.content) }) { Icon(Icons.Rounded.OpenInNew, "Buka di aplikasi", tint = cs.primary) }
             }
             if (hasText) {
                 if (open) Text(it.content, style = MaterialTheme.typography.bodyMedium, color = cs.onSurface)
                 else Text(it.content, style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant, maxLines = 2, overflow = TextOverflow.Ellipsis)
             }
             it.files.forEach { f -> FileRow(it, f, isDownloaded(it, f), progress[fileKey(it, f)], onOpenFile, onDownloadFile) }
+            if (it.type == "forum" && it.url.isNotEmpty()) OutlinedButton({ onOpenMoodle(it.url) }, Modifier.fillMaxWidth()) { Icon(Icons.Rounded.Forum, null, Modifier.size(18.dp)); Spacer(Modifier.width(8.dp)); Text("Buka forum / balas") }
             // Modul Moodle tanpa file/tautan luar (video terpasang, forum, dll.): buka halaman aslinya dengan login otomatis.
             if (it.type == "link" && it.files.isEmpty() && !it.content.startsWith("http") && it.url.isNotEmpty())
                 OutlinedButton({ onOpenMoodle(it.url) }, Modifier.fillMaxWidth()) { Icon(Icons.Rounded.OpenInNew, null, Modifier.size(18.dp)); Spacer(Modifier.width(8.dp)); Text("Buka di Moodle") }
@@ -226,6 +227,17 @@ private fun TaskCard(it: Item, done: Boolean, nowSec: Long, onOpenMoodle: (Strin
             if (open) {
                 if (it.content.isNotBlank()) Text(it.content, Modifier.padding(end = 10.dp), style = MaterialTheme.typography.bodyMedium)
                 Text(if (it.type == "quiz") "Tes dikerjakan online di Moodle; info jadwal tersimpan untuk offline." else "Kumpulkan dan lihat nilai di Moodle kampus.", Modifier.padding(end = 10.dp), style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant)
+                it.attempts.forEach { a ->
+                    val stateLabel = when (a.state) { "finished" -> "Selesai"; "inprogress" -> "Sedang berjalan"; "overdue" -> "Lewat waktu"; "abandoned" -> "Ditinggalkan"; else -> a.state }
+                    var showReview by rememberSaveable(it.id, a.number) { mutableStateOf(false) }
+                    Row(Modifier.padding(end = 10.dp).then(if (a.review.isNotEmpty()) Modifier.clickable { showReview = !showReview } else Modifier), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Text("Percobaan ${a.number}", style = MaterialTheme.typography.labelLarge)
+                        Text(stateLabel + (a.finishedAt?.let { t -> " · " + java.text.SimpleDateFormat("d MMM yyyy HH:mm", Locale("id")).format(java.util.Date(t * 1000)) } ?: ""), Modifier.weight(1f), style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant)
+                        if (a.review.isNotEmpty()) Icon(if (showReview) Icons.Rounded.ExpandLess else Icons.Rounded.ExpandMore, "Soal dan jawaban", tint = cs.outline)
+                        a.grade?.let { g -> Pill("${Logic.fmtGrade(g)} / ${Logic.fmtGrade(a.max ?: 0.0)}", cs.secondaryContainer, cs.onSecondaryContainer) }
+                    }
+                    if (showReview) Text("Soal & jawaban percobaan ${a.number}\n\n${a.review}", Modifier.padding(end = 10.dp), style = MaterialTheme.typography.bodySmall)
+                }
                 if (it.url.isNotEmpty()) Button({ onOpenMoodle(it.url) }, Modifier.padding(end = 10.dp)) { Text(if (it.type == "quiz") "Kerjakan tes di Moodle" else "Buka di Moodle") }
             }
         }

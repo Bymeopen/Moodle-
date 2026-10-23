@@ -40,7 +40,7 @@ fun HomeScreen(
     name: String, snapshot: Snapshot?, stats: Map<Long, Repo.CourseStats>, dl: DlState, online: Boolean, busy: Boolean, syncError: String?,
     doneIds: Set<Long>, dueCards: Int, hasKey: Boolean, nowSec: Long, hour: Int,
     onSync: () -> Unit, onOpenCourse: (Long) -> Unit, onDeadlines: () -> Unit, onCourses: () -> Unit, onGrades: () -> Unit,
-    onDownloadAll: () -> Unit, onPause: () -> Unit, onReview: () -> Unit, onAskAi: () -> Unit,
+    onDownloadAll: () -> Unit, onPause: () -> Unit, onReview: () -> Unit, onAskAi: () -> Unit, onLibrary: () -> Unit = {},
 ) {
     val courses = snapshot?.courses.orEmpty()
     val upcoming = remember(snapshot, doneIds, nowSec) { deadlinesOf(snapshot).filter { it.item.id !in doneIds && it.item.dueAt!! >= nowSec } }
@@ -75,6 +75,18 @@ fun HomeScreen(
                     StatTile(Icons.Rounded.School, "${courses.size}", "Kursus", MaterialTheme.colorScheme.primary, Modifier.weight(1f), onCourses)
                     StatTile(Icons.Rounded.EventAvailable, "${upcoming.size}", "Tenggat", MaterialTheme.colorScheme.tertiary, Modifier.weight(1f), onDeadlines)
                     StatTile(Icons.Rounded.Style, "$dueCards", "Kartu hari ini", MaterialTheme.colorScheme.secondary, Modifier.weight(1f), if (dueCards > 0) onReview else null)
+                }
+            }
+            item {
+                Card2(Modifier.fillMaxWidth(), onLibrary) {
+                    Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        IconBadge(Icons.Rounded.LocalLibrary, MaterialTheme.colorScheme.tertiary)
+                        Column(Modifier.weight(1f)) {
+                            Text("Perpustakaan gratis", style = MaterialTheme.typography.titleSmall)
+                            Text("Cari buku & jurnal, unduh untuk offline", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                        Icon(Icons.Rounded.ChevronRight, null, tint = MaterialTheme.colorScheme.outline)
+                    }
                 }
             }
             item { OfflineCard(files, got, stats.values.sumOf { it.downloadedBytes }, stats.values.sumOf { it.bytes }, dl, onDownloadAll, onPause) }

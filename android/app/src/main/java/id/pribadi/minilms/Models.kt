@@ -16,10 +16,14 @@ data class Item(
     val maxGrade: Double?,
     val files: List<FileRef>,
     val url: String = "",        // halaman modul di Moodle (untuk "Buka di Moodle"/auto-login)
+    val attempts: List<QuizAttempt> = emptyList(),   // percobaan tes yang sudah dikerjakan (hanya type quiz)
 ) {
     /** Tugas atau tes: punya tenggat dan dihitung di Tenggat/pengingat. */
     val isTask get() = type == "assignment" || type == "quiz"
 }
+
+/** Satu percobaan tes. [grade] sudah diskalakan ke [max] (nilai tes); null bila belum selesai/dinilai. */
+data class QuizAttempt(val number: Int, val state: String, val grade: Double?, val max: Double?, val finishedAt: Long?, val id: Long = 0, val review: String = "")
 
 data class Grade(val name: String, val grade: Double?, val max: Double?)
 
@@ -40,8 +44,10 @@ fun JSONObject.toFileRef() = FileRef(getString("name"), getString("path"), getSt
 
 fun Item.toJson() = JSONObject().put("id", id).put("type", type).put("title", title).put("section", section).put("content", content)
     .put("dueAt", dueAt ?: JSONObject.NULL).put("maxGrade", maxGrade ?: JSONObject.NULL).put("files", JSONArray(files.map { it.toJson() })).put("url", url)
+    .put("attempts", JSONArray(attempts.map { JSONObject().put("n", it.number).put("state", it.state).put("grade", it.grade ?: JSONObject.NULL).put("max", it.max ?: JSONObject.NULL).put("at", it.finishedAt ?: JSONObject.NULL).put("id", it.id).put("review", it.review) }))
 fun JSONObject.toItem() = Item(getLong("id"), getString("type"), getString("title"), getString("section"), getString("content"),
-    optLongOrNull("dueAt"), optDoubleOrNull("maxGrade"), getJSONArray("files").mapObjects { it.toFileRef() }, optString("url"))
+    optLongOrNull("dueAt"), optDoubleOrNull("maxGrade"), getJSONArray("files").mapObjects { it.toFileRef() }, optString("url"),
+    optJSONArray("attempts")?.mapObjects { QuizAttempt(it.optInt("n"), it.optString("state"), it.optDoubleOrNull("grade"), it.optDoubleOrNull("max"), it.optLongOrNull("at"), it.optLong("id"), it.optString("review")) } ?: emptyList())
 
 fun Grade.toJson() = JSONObject().put("name", name).put("grade", grade ?: JSONObject.NULL).put("max", max ?: JSONObject.NULL)
 fun JSONObject.toGrade() = Grade(getString("name"), optDoubleOrNull("grade"), optDoubleOrNull("max"))

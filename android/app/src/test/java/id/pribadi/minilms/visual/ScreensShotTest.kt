@@ -77,4 +77,11 @@ class MoreShotTest {
 
     @Test fun loginLight() = show("login", ThemeMode.LIGHT) { LoginContent(false, null, {}, {}, { _, _, _ -> }, { _, _ -> }, { _, _, _ -> }) }
     @Test fun loginProvidersLight() = show("login_idp", ThemeMode.LIGHT) { LoginContent(false, PublicConfig("https://x", "https://x/launch.php", 1, listOf(Idp("Login SSO Google", 3))), {}, {}, { _, _, _ -> }, { _, _ -> }, { _, _, _ -> }) }
+
+    private val libState = MainViewModel.LibState(source = LibSource.BOOKS, query = "ekonomi", searched = true,
+        results = listOf(LibItem(LibSource.BOOKS, "a", "Pengantar Ilmu Ekonomi Mikro", "Sadono Sukirno", "2005", "", "https://archive.org/details/a"),
+            LibItem(LibSource.BOOKS, "b", "Principles of Economics", "N. Gregory Mankiw", "2011", "", "https://archive.org/details/b")),
+        saved = listOf(LibSaved("b", "Principles of Economics", "N. Gregory Mankiw", "b.pdf", 18_000_000)), downloading = mapOf("a" to 0.45f))
+    @Test fun libraryLight() = show("library", ThemeMode.LIGHT) { LibraryContent(libState, {}, {}, {}, {}, {}, {}) }
+    @Test fun libraryDark() = show("library", ThemeMode.DARK) { LibraryContent(libState, {}, {}, {}, {}, {}, {}) }
 }

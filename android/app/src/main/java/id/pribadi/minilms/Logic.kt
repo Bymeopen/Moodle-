@@ -66,6 +66,9 @@ object Logic {
 
     fun paletteIndex(key: Long, size: Int): Int = Math.floorMod(key, size.toLong()).toInt()
 
+    /** Nilai ringkas: 80 -> "80", 72.5 -> "72,5". */
+    fun fmtGrade(g: Double) = if (g == Math.rint(g)) g.toLong().toString() else "%.1f".format(java.util.Locale("id"), g)
+
     fun fmtSize(b: Long) = when {
         b >= 1L shl 30 -> "%.1f GB".format(java.util.Locale.US, b / 1073741824.0)
         b >= 1L shl 20 -> "%.1f MB".format(java.util.Locale.US, b / 1048576.0)
