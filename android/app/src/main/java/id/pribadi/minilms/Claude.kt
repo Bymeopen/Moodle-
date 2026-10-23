@@ -139,7 +139,7 @@ object AiMaterial {
             if (i.section != section) { section = i.section; if (section.isNotEmpty()) append("\n## ").append(section).append('\n') }
             append("\n### [").append(i.type).append("] ").append(i.title).append('\n')
             if (i.type != "link" && i.content.isNotBlank()) append(i.content).append('\n')
-            i.dueAt?.let { append("Tenggat (epoch detik): ").append(it).append('\n') }
+            i.dueAt?.let { append("Tenggat: ").append(java.time.Instant.ofEpochSecond(it).atZone(java.time.ZoneId.systemDefault()).toLocalDateTime().toString().replace('T', ' ')).append('\n') }
             val unread = mutableListOf<String>()
             for (f in i.files) {
                 val t = fileText(i, f)
@@ -150,8 +150,11 @@ object AiMaterial {
     }
 
     /** Teks materi atau ApiError bila terlalu panjang (tidak dipotong diam-diam). */
+    /** Teks kursus/siswa tidak boleh "menutup" pembungkus data (<materi_kursus>, <materi>) lalu menyelipkan instruksi. */
+    fun neutralize(t: String) = t.replace(Regex("(?i)<\\s*/\\s*materi"), "&lt;/materi").replace(Regex("(?i)<\\s*materi"), "&lt;materi")
+
     fun forAi(c: Course, fileText: (Item, FileRef) -> String? = { _, _ -> null }): String {
-        val t = build(c, fileText)
+        val t = neutralize(build(c, fileText))
         if (t.length > MAX_CHARS) throw ApiError("Materi kursus terlalu panjang untuk satu permintaan (${t.length / 1000}K karakter)")
         return t
     }

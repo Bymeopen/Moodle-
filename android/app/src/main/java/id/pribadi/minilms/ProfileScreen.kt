@@ -23,13 +23,13 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 
 data class ProfileState(
     val fullName: String, val siteName: String, val siteUrl: String, val syncedAt: Long?, val nowSec: Long, val wifiOnly: Boolean, val reminders: Boolean,
-    val theme: ThemeMode, val storageUsed: Long, val cardsTotal: Int, val provider: Provider, val model: String, val keys: Set<Provider>, val sessionUsage: Usage, val version: String,
+    val theme: ThemeMode, val storageUsed: Long, val cardsTotal: Int, val provider: Provider, val model: String, val keys: Set<Provider>, val sessionUsage: Usage, val version: String, val hasCrash: Boolean = false,
 )
 
 class ProfileActions(
     val onGrades: () -> Unit = {}, val onReview: () -> Unit = {}, val onOpenWeb: (String) -> Unit = {}, val onSync: () -> Unit = {}, val onWifiOnly: (Boolean) -> Unit = {},
     val onReminders: (Boolean) -> Unit = {}, val onTheme: (ThemeMode) -> Unit = {}, val onDeleteDownloads: () -> Unit = {}, val onModel: (String) -> Unit = {},
-    val onProvider: (Provider) -> Unit = {}, val onSaveKey: (Provider, String) -> Unit = { _, _ -> }, val onClearKey: (Provider) -> Unit = {}, val onLogout: () -> Unit = {},
+    val onDiagnostics: () -> Unit = {}, val onClearCrash: () -> Unit = {}, val onProvider: (Provider) -> Unit = {}, val onSaveKey: (Provider, String) -> Unit = { _, _ -> }, val onClearKey: (Provider) -> Unit = {}, val onLogout: () -> Unit = {},
 )
 
 @Composable
@@ -40,9 +40,9 @@ fun ProfileScreen(vm: MainViewModel, onGrades: () -> Unit, onReview: () -> Unit 
     val usage by vm.ai.sessionUsage.collectAsStateWithLifecycle()
     var wifi by remember { mutableStateOf(vm.repo.wifiOnly) }; var remind by remember { mutableStateOf(vm.repo.reminders) }
     val used = remember(tick) { vm.repo.storageUsed() }
-    val st = ProfileState(site?.fullName.orEmpty(), site?.siteName.orEmpty(), site?.url.orEmpty(), snap?.syncedAt, System.currentTimeMillis() / 1000, wifi, remind, theme, used, cards.size, provider, model, keys, usage, "2.2")
+    val st = ProfileState(site?.fullName.orEmpty(), site?.siteName.orEmpty(), site?.url.orEmpty(), snap?.syncedAt, System.currentTimeMillis() / 1000, wifi, remind, theme, used, cards.size, provider, model, keys, usage, vm.versionName(), vm.hasCrash())
     ProfileContent(st, ProfileActions(onGrades, onReview, vm::openWeb, { vm.sync() }, { wifi = it; vm.setWifiOnly(it) }, { remind = it; vm.setReminders(it) }, vm::setTheme,
-        { vm.deleteDownloads() }, { vm.ai.setModel(it) }, vm.ai::setProvider, { p, k -> vm.ai.setKey(k, p) }, { vm.ai.clearKey(it) }, vm::logout))
+        { vm.deleteDownloads() }, { vm.ai.setModel(it) }, vm::shareDiagnostics, vm::clearCrash, vm.ai::setProvider, { p, k -> vm.ai.setKey(k, p) }, { vm.ai.clearKey(it) }, vm::logout))
 }
 
 private val NIM = Regex("\\b(\\d{6,})\\b")
@@ -140,6 +140,12 @@ fun ProfileContent(s: ProfileState, a: ProfileActions) {
                 }
             }
             if (!s.sessionUsage.isEmpty) Row2(Icons.Rounded.Payments, "Pemakaian sesi ini", s.sessionUsage.label(s.model), cs.outline) {}
+        }
+        Group("Bantuan") {
+            Row2(Icons.Rounded.BugReport, "Laporan galat", if (s.hasCrash) "Ada crash tercatat — bagikan agar bisa diperbaiki" else "Bagikan info diagnostik (tanpa token/kunci/isi kursus)", if (s.hasCrash) cs.error else cs.outline) {
+                TextButton(a.onDiagnostics) { Text("Bagikan") }
+            }
+            if (s.hasCrash) Row2(Icons.Rounded.DeleteOutline, "Hapus catatan crash", "Setelah dibagikan", cs.outline) { TextButton(a.onClearCrash) { Text("Hapus") } }
         }
         Group("Akun") {
             Row2(Icons.Rounded.Logout, "Keluar", "Hapus token, data kursus, kartu, dan unduhan dari ponsel ini", cs.error, onClick = { confirmLogout = true }) {}

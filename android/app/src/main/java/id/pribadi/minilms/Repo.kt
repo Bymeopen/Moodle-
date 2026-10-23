@@ -25,6 +25,7 @@ class Repo private constructor(ctx: Context) {
     val site: StateFlow<Site?> = _site
     private val _snapshot = MutableStateFlow(loadSnapshot())
     val snapshot: StateFlow<Snapshot?> = _snapshot
+    @Volatile private var epoch = 0          // naik tiap logout; sinkron yang mulai sebelum logout dibuang
     /** Naik setiap kali status unduhan berubah, agar UI menghitung ulang. */
     private val _tick = MutableStateFlow(0)
     val tick: StateFlow<Int> = _tick
@@ -32,7 +33,15 @@ class Repo private constructor(ctx: Context) {
 
     // ---------- kartu hafalan ----------
     private val cardsFile = File(app.filesDir, "cards.json")
-    private val _cards = MutableStateFlow(runCatching { org.json.JSONArray(cardsFile.readText()).toCards() }.getOrDefault(emptyList()))
+    /** Baca per kartu: satu entri rusak tidak boleh membuang semua kartu. Berkas yang tidak terbaca dipindah ke .corrupt (bukan ditimpa). */
+    private fun loadCards(): List<Card> {
+        if (!cardsFile.isFile) return emptyList()
+        return try {
+            val a = org.json.JSONArray(cardsFile.readText())
+            (0 until a.length()).mapNotNull { runCatching { a.getJSONObject(it).toCard() }.getOrNull() }
+        } catch (e: Exception) { runCatching { cardsFile.renameTo(File(cardsFile.path + ".corrupt")) }; emptyList() }
+    }
+    private val _cards = MutableStateFlow(loadCards())
     val cards: StateFlow<List<Card>> = _cards
 
     private fun saveCards(list: List<Card>) {
@@ -55,6 +64,11 @@ class Repo private constructor(ctx: Context) {
     val theme: StateFlow<ThemeMode> = _theme
     fun setTheme(m: ThemeMode) { prefs.edit().putString("theme", m.name).apply(); _theme.value = m }
 
+    /** Izin notifikasi hanya diminta sekali (bukan tiap aplikasi dibuka). */
+    var askedNotif: Boolean
+        get() = prefs.getBoolean("asked_notif", false)
+        set(v) = prefs.edit().putBoolean("asked_notif", v).apply()
+
     var wifiOnly: Boolean
         get() = prefs.getBoolean("wifi_only", true)
         set(v) = prefs.edit().putBoolean("wifi_only", v).apply()
@@ -67,21 +81,27 @@ class Repo private constructor(ctx: Context) {
 
     /** Keluar: hapus token, snapshot, dan semua file unduhan. */
     fun logout() {
+        epoch++
         prefs.edit().clear().apply()
+        _done.value = emptySet()
         snapFile.delete(); cardsFile.delete(); _cards.value = emptyList(); root.deleteRecursively()
+        File(app.filesDir, "chats").deleteRecursively()        // riwayat chat memuat isi materi kursus
+        app.getSharedPreferences("reminded", Context.MODE_PRIVATE).edit().clear().apply()
         _site.value = null; _snapshot.value = null; bump()
     }
 
     // ---------- SSO yang sedang berjalan ----------
     /** [base] = alamat situs yang dipakai API; [sigBase] = wwwroot dari Moodle (dasar tanda tangan callback). */
     data class SsoState(val base: String, val sigBase: String, val passport: String)
-    fun beginSso(base: String, sigBase: String, passport: String) = prefs.edit().putString("sso_base", base).putString("sso_sig", sigBase).putString("sso_passport", passport).apply()
+    fun beginSso(base: String, sigBase: String, passport: String) = prefs.edit().putString("sso_base", base).putString("sso_sig", sigBase).putString("sso_passport", passport).putInt("sso_fail", 0).apply()
+    /** Catat callback SSO yang gagal diverifikasi; mengembalikan jumlah kegagalan (state dihapus setelah 3 agar tidak bisa ditebak berulang). */
+    fun noteSsoFailure(): Int { val n = prefs.getInt("sso_fail", 0) + 1; prefs.edit().putInt("sso_fail", n).apply(); return n }
     fun pendingSso(): SsoState? {
         val b = prefs.getString("sso_base", null) ?: return null
         val p = prefs.getString("sso_passport", null) ?: return null
         return SsoState(b, prefs.getString("sso_sig", b) ?: b, p)
     }
-    fun clearSso() = prefs.edit().remove("sso_base").remove("sso_sig").remove("sso_passport").apply()
+    fun clearSso() = prefs.edit().remove("sso_base").remove("sso_sig").remove("sso_passport").remove("sso_fail").apply()
 
     // ---------- snapshot ----------
     private fun loadSnapshot(): Snapshot? = runCatching { JSONObject(snapFile.readText()).toSnapshot() }.getOrNull()
@@ -97,12 +117,16 @@ class Repo private constructor(ctx: Context) {
     }
 
     /** Sinkron dari Moodle. Bila gagal, snapshot lama tetap dipakai. */
-    fun sync(): Snapshot {
+    fun sync(): Snapshot = synchronized(syncLock) {          // UI dan ReminderWorker bisa sinkron bersamaan; satu per satu
         val site = _site.value ?: throw ApiError("Belum login")
-        val snap = MoodleApi.fetchAll(site)
+        val e = epoch
+        val snap = MoodleApi.fetchAll(site, previous = _snapshot.value)
+        // logout terjadi saat sinkron berjalan: jangan menghidupkan lagi data akun lama
+        if (e != epoch || _site.value == null) throw ApiError("Sesi berakhir saat sinkron; hasil dibuang")
         saveSnapshot(snap)
-        return snap
+        snap
     }
+    private val syncLock = Any()
 
     // ---------- file ----------
     fun fileOf(courseId: Long, itemId: Long, f: FileRef): File {
@@ -117,7 +141,8 @@ class Repo private constructor(ctx: Context) {
 
     fun isDownloaded(courseId: Long, itemId: Long, f: FileRef): Boolean {
         val file = fileOf(courseId, itemId, f)
-        return file.isFile && file.length() > 0 && prefs.getLong(key(courseId, itemId, f), -1L) == f.modified
+        // file kosong yang sah (size 0 di Moodle) juga dianggap terunduh; kalau tidak, diunduh ulang selamanya
+        return file.isFile && (file.length() > 0 || f.size == 0L) && prefs.getLong(key(courseId, itemId, f), -1L) == f.modified
     }
 
     fun pending(courseId: Long? = null): List<Pending> =
@@ -151,7 +176,18 @@ class Repo private constructor(ctx: Context) {
      * Unduh satu file ke penyimpanan privat. Token dikirim lewat POST body ke host Moodle yang sama saja.
      * [shouldStop] dicek tiap potongan agar jeda/batal responsif; file parsial dihapus.
      */
+    private val dlLocks = java.util.concurrent.ConcurrentHashMap<String, Any>()
+
+    /** Unduhan WorkManager dan unduhan satu file tidak boleh menulis berkas .part yang sama; yang kedua menunggu lalu melihat file sudah ada. */
     fun download(site: Site, p: Pending, shouldStop: () -> Boolean, onBytes: (Long) -> Unit = {}) {
+        val dest = fileOf(p.course.id, p.item.id, p.file)
+        synchronized(dlLocks.getOrPut(dest.path) { Any() }) {
+            if (isDownloaded(p.course.id, p.item.id, p.file)) return
+            downloadLocked(site, p, shouldStop, onBytes)
+        }
+    }
+
+    private fun downloadLocked(site: Site, p: Pending, shouldStop: () -> Boolean, onBytes: (Long) -> Unit) {
         val f = p.file
         val a = URL(f.url); val b = URL(site.url)
         if (a.protocol != "https" || a.host != b.host || a.port != b.port) throw ApiError("File berasal dari host lain; dilewati")
@@ -162,8 +198,14 @@ class Repo private constructor(ctx: Context) {
         val conn = HttpTransport.open(f.url, mapOf("token" to site.token))
         try {
             if (conn.responseCode != 200) throw ApiError("HTTP ${conn.responseCode}")
-            if (conn.contentType?.contains("json") == true) throw ApiError("Moodle menolak akses file (token/izin)")
+            val isJson = conn.contentType?.contains("json") == true
             conn.inputStream.use { input -> part.outputStream().use { out ->
+                // file .json yang sah tidak boleh ditolak: hanya JSON galat Moodle kecil (exception/errorcode) yang dianggap penolakan
+                if (isJson) {
+                    val head = input.readNBytes(8192)
+                    if (head.size < 8192) moodleErrorIn(head)?.let { throw ApiError("Moodle menolak akses file: $it") }
+                    out.write(head); onBytes(head.size.toLong())
+                }
                 val buf = ByteArray(64 * 1024)
                 while (true) {
                     if (shouldStop()) { part.delete(); throw InterruptedException("dihentikan") }
@@ -179,6 +221,12 @@ class Repo private constructor(ctx: Context) {
     }
 
     companion object {
+        /** Pesan galat bila [body] adalah JSON galat Moodle ({"exception":...} / {"errorcode":...}); null bila bukan. */
+        fun moodleErrorIn(body: ByteArray): String? = try {
+            val j = org.json.JSONObject(String(body))
+            if (j.has("exception") || j.has("errorcode")) j.optString("message", j.optString("errorcode")) else null
+        } catch (e: Exception) { null }
+
         @Volatile private var inst: Repo? = null
         fun get(ctx: Context): Repo = inst ?: synchronized(this) { inst ?: Repo(ctx).also { inst = it } }
     }

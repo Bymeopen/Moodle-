@@ -31,7 +31,7 @@ fun CourseDetailScreen(vm: MainViewModel, c: Course, st: Repo.CourseStats, onBac
     val progress by vm.fileProgress.collectAsStateWithLifecycle()
     val done by vm.doneAssignments.collectAsStateWithLifecycle()
     val zip = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/zip")) { uri -> if (uri != null) vm.exportZip(c, uri) }
-    val nowSec = remember(tick) { System.currentTimeMillis() / 1000 }
+    val nowSec by rememberNowSec(tick)
     CourseDetailContent(c, st, nowSec, done, dl, progress,
         isDownloaded = { i, f -> tick >= 0 && vm.repo.isDownloaded(c.id, i.id, f) }, fileKey = { i, f -> vm.repo.fileKey(c.id, i.id, f) },
         onBack = onBack, onDownloadCourse = { vm.downloadCourse(c.id) }, onPause = vm::pause, onDeleteDownloads = { vm.deleteDownloads(c.id) },
@@ -92,7 +92,7 @@ fun CourseDetailContent(
                         Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                             ProgressBar(if (dl.bytesTotal > 0) dl.bytes.toFloat() / dl.bytesTotal else 0f, color = MaterialTheme.colorScheme.secondary)
                             Row(verticalAlignment = Alignment.CenterVertically) {
-                                Text("${dl.done}/${dl.total} · ${dl.name}", Modifier.weight(1f), style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                Text(if (dl.waiting) "Menunggu Wi-Fi atau koneksi… unduhan dimulai otomatis" else "${dl.done}/${dl.total} · ${dl.name}", Modifier.weight(1f), style = MaterialTheme.typography.bodySmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
                                 TextButton(onPause) { Icon(Icons.Rounded.Pause, null, Modifier.size(18.dp)); Spacer(Modifier.width(4.dp)); Text("Jeda") }
                             }
                         }

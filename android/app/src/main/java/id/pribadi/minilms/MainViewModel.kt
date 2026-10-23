@@ -23,7 +23,7 @@ const val NOTEBOOK_MAX_SOURCES = 50
 private const val STALE_SECONDS = 30 * 60L
 
 data class DlState(val running: Boolean = false, val done: Int = 0, val total: Int = 0, val name: String = "", val bytes: Long = 0, val bytesTotal: Long = 0,
-                   val failed: Int = 0, val error: String = "")
+                   val failed: Int = 0, val error: String = "", val waiting: Boolean = false)
 
 class MainViewModel(app: Application) : AndroidViewModel(app) {
     val repo = Repo.get(app)
@@ -34,6 +34,12 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     val cards = repo.cards
     val doneAssignments = repo.doneAssignments
     val theme = repo.theme
+
+    /** Statistik unduhan per kursus; dihitung di thread IO (menyentuh disk) dan tidak lagi di composition. */
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    val stats: StateFlow<Map<Long, Repo.CourseStats>> = combine(repo.snapshot, repo.tick) { s, _ -> s }
+        .conflate().mapLatest { s -> s?.courses.orEmpty().associate { it.id to repo.stats(it) } }
+        .flowOn(Dispatchers.IO).stateIn(viewModelScope, SharingStarted.Eagerly, emptyMap())
 
     private val _busy = MutableStateFlow(false)
     val busy: StateFlow<Boolean> = _busy
@@ -56,6 +62,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     init {
         runCatching { cm?.registerDefaultNetworkCallback(netCb) }
+        if (repo.site.value != null) Jobs.scheduleReminders(getApplication(), repo.reminders)      // idempoten (KEEP); jangan bergantung pada sinkron pertama
         // sinkron otomatis saat dibuka bila data sudah > 30 menit dan ada koneksi
         viewModelScope.launch {
             delay(400)
@@ -72,7 +79,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             val w = list.firstOrNull() ?: return@map DlState()
             when (w.state) {
                 WorkInfo.State.RUNNING, WorkInfo.State.ENQUEUED, WorkInfo.State.BLOCKED -> DlState(
-                    running = true, done = w.progress.getInt(DownloadWorker.P_DONE, 0), total = w.progress.getInt(DownloadWorker.P_TOTAL, 0),
+                    running = true, waiting = w.state != WorkInfo.State.RUNNING,     // menunggu Wi-Fi/koneksi, belum mulai done = w.progress.getInt(DownloadWorker.P_DONE, 0), total = w.progress.getInt(DownloadWorker.P_TOTAL, 0),
                     name = w.progress.getString(DownloadWorker.P_NAME) ?: "", bytes = w.progress.getLong(DownloadWorker.P_BYTES, 0), bytesTotal = w.progress.getLong(DownloadWorker.P_BYTES_TOTAL, 0))
                 WorkInfo.State.SUCCEEDED -> DlState(failed = w.outputData.getInt(DownloadWorker.O_FAILED, 0), error = w.outputData.getString(DownloadWorker.O_ERROR) ?: "")
                 else -> DlState()
@@ -94,8 +101,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private fun finishLogin(base: String, token: String) {
         val s = MoodleApi.siteInfo(base, token)  // verifikasi token sekaligus
         repo.saveSite(s)
-        repo.sync()
         Jobs.scheduleReminders(getApplication(), repo.reminders)
+        repo.sync()
     }
 
     /** Opsi login situs (penyedia SSO dll.) setelah pengguna mengisi alamat; null bila belum dicek. */
@@ -108,7 +115,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     /** Mulai SSO. [idp] = penyedia pilihan (null = halaman login Moodle biasa). Mengembalikan URL untuk dibuka di browser. */
     fun startSso(rawUrl: String, cfg: PublicConfig, idp: Idp?): String? = try {
         val base = MoodleApi.normalizeBase(rawUrl)
-        val passport = (100000..999999).random().toString()
+        val passport = java.util.UUID.randomUUID().toString().replace("-", "")     // 128 bit acak (bukan 6 digit yang bisa ditebak)
         repo.beginSso(base, cfg.wwwroot.trimEnd('/'), passport)
         Sso.launchUrl(cfg.launchUrl, passport, idp?.id)
     } catch (e: Exception) { fail(e); null }
@@ -116,7 +123,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun handleCallback(uri: Uri) {
         val st = repo.pendingSso() ?: run { _message.value = "Tidak ada login yang sedang berjalan; mulai dari tombol SSO"; return }
         launchBusy {
-            val token = Sso.parseCallback(uri.toString(), st.sigBase, st.passport)
+            val token = try { Sso.parseCallback(uri.toString(), st.sigBase, st.passport) }
+                catch (e: ApiError) { if (repo.noteSsoFailure() >= 3) repo.clearSso(); throw e }
             repo.clearSso()
             finishLogin(st.base, token)
         }
@@ -167,6 +175,14 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun setReminders(on: Boolean) { repo.reminders = on; Jobs.scheduleReminders(getApplication(), on) }
     fun setWifiOnly(on: Boolean) { repo.wifiOnly = on }
     fun setTheme(m: ThemeMode) = repo.setTheme(m)
+    /** Nilai kartu dan simpan; galat disk jadi pesan, bukan crash. Kartu hasil jadwal baru tetap dikembalikan untuk antrean sesi. */
+    fun rateCard(card: Card, rating: String): Card {
+        val next = Srs.review(card, rating)
+        try { repo.updateCard(next) } catch (e: java.io.IOException) { _message.value = "Gagal menyimpan kartu: ${e.message}" }
+        return next
+    }
+    fun deleteCard(id: String) { try { repo.deleteCard(id) } catch (e: java.io.IOException) { _message.value = "Gagal menghapus kartu: ${e.message}" } }
+
     fun toggleDone(id: Long) = repo.setAssignmentDone(id, id !in repo.doneAssignments.value)
 
     // ---------- file & tautan ----------
@@ -175,7 +191,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val ctx = getApplication<Application>()
         if (!repo.isDownloaded(c.id, i.id, f)) { _message.value = "File belum diunduh"; return }
         val file = repo.fileOf(c.id, i.id, f)
-        val uri = FileProvider.getUriForFile(ctx, "${ctx.packageName}.files", file)
+        val uri = try { FileProvider.getUriForFile(ctx, "${ctx.packageName}.files", file) } catch (e: IllegalArgumentException) { _message.value = "File tidak bisa dibuka"; return }
         val mime = f.mime ?: MimeTypeMap.getSingleton().getMimeTypeFromExtension(file.extension.lowercase()) ?: "*/*"
         try {
             ctx.startActivity(Intent(Intent.ACTION_VIEW).setDataAndType(uri, mime).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK))
@@ -187,8 +203,15 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
      * supaya bisa ditambahkan sebagai sumber di NotebookLM (atau Google Drive). NotebookLM membatasi jumlah sumber per notebook.
      */
     fun shareToNotebook(c: Course) {
+        viewModelScope.launch {
+            val md = try { withContext(Dispatchers.IO) { java.io.File(repo.root, "${c.id}/${safeName(c.name)}.md").apply { parentFile!!.mkdirs(); writeText(AiMaterial.build(c)) } } }
+                catch (e: java.io.IOException) { _message.value = "Gagal menyiapkan ringkasan: ${e.message}"; return@launch }
+            launchShare(c, md)
+        }
+    }
+
+    private fun launchShare(c: Course, md: java.io.File) {
         val ctx = getApplication<Application>()
-        val md = java.io.File(repo.root, "${c.id}/${safeName(c.name)}.md").apply { parentFile!!.mkdirs(); writeText(AiMaterial.build(c)) }
         val files = c.items.flatMap { i -> i.files.filter { repo.isDownloaded(c.id, i.id, it) }.map { repo.fileOf(c.id, i.id, it) } }
         val all = listOf(md) + files
         val sent = all.take(NOTEBOOK_MAX_SOURCES)
@@ -232,6 +255,17 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         try { tab.launchUrl(ctx, Uri.parse(url)) } catch (e: ActivityNotFoundException) { _message.value = "Tidak ada browser untuk membuka situs ini" }
     }
     fun openNotebookLm() = openWeb("https://notebooklm.google.com")
+
+    /** Bagikan laporan diagnostik + jejak crash terakhir (sudah disamarkan) lewat menu bagikan; tidak dikirim otomatis. */
+    fun shareDiagnostics() {
+        val ctx = getApplication<Application>()
+        val text = CrashLog.diagnostics(ctx, repo, ai.provider.value.label, ai.model.value) + (CrashLog.last(ctx)?.let { "\n--- Crash terakhir ---\n$it" } ?: "\n(tidak ada crash tercatat)")
+        val send = Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_SUBJECT, "Laporan Mini LMS").putExtra(Intent.EXTRA_TEXT, text)
+        try { ctx.startActivity(Intent.createChooser(send, "Bagikan laporan").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) } catch (e: ActivityNotFoundException) { _message.value = "Tidak ada aplikasi untuk membagikan teks" }
+    }
+    fun versionName(): String = runCatching { getApplication<Application>().packageManager.getPackageInfo(getApplication<Application>().packageName, 0).versionName }.getOrNull() ?: "?"
+    fun hasCrash(): Boolean = CrashLog.last(getApplication()) != null
+    fun clearCrash() = CrashLog.clear(getApplication())
 
     fun openLink(url: String) {
         val ctx = getApplication<Application>()

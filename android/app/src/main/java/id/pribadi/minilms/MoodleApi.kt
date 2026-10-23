@@ -65,7 +65,8 @@ object Sso {
      */
     fun parseCallback(callback: String, base: String, passport: String): String {
         val raw = callback.substringAfter("token=", "").substringBefore('&')
-        val b64 = try { java.net.URLDecoder.decode(raw, "UTF-8") } catch (e: IllegalArgumentException) { throw ApiError("Tautan login rusak") }
+        // hanya %XX yang didekode; URLDecoder akan mengubah '+' (karakter sah base64) menjadi spasi dan merusak token
+        val b64 = Regex("%([0-9A-Fa-f]{2})").replace(raw) { it.groupValues[1].toInt(16).toChar().toString() }
         if (b64.isEmpty()) throw ApiError("Tautan login tidak berisi token")
         val parts = try { String(Base64.getMimeDecoder().decode(b64)).split(":::") } catch (e: IllegalArgumentException) { throw ApiError("Token login rusak") }
         if (parts.size < 2 || parts[1].isEmpty()) throw ApiError("Format token tidak dikenali")
@@ -157,40 +158,58 @@ object MoodleApi {
 
     private val EPOCH_NONE = 0L
 
-    /** Tarik semua: kursus, materi, tugas+tenggat, nilai. Kegagalan satu fungsi menjadi peringatan, bukan galat total. */
-    fun fetchAll(site: Site, now: Long = System.currentTimeMillis() / 1000): Snapshot {
+    /** Jalankan [block]; kegagalan jaringan/format dicatat sebagai peringatan dan menghasilkan null (tidak pernah melempar). */
+    private fun <T> attempt(warnings: MutableList<String>, label: String, block: () -> T): T? = try { block() }
+        catch (e: ApiError) { warnings += "$label: ${e.message}"; null }
+        catch (e: org.json.JSONException) { warnings += "$label: respons Moodle tidak dikenali"; null }
+        catch (e: ClassCastException) { warnings += "$label: respons Moodle tidak dikenali"; null }
+
+    /**
+     * Tarik semua: kursus, materi, tugas+tenggat, nilai.
+     * Kegagalan satu fungsi menjadi peringatan, bukan galat total, dan **tidak boleh merusak data offline**: bila konten/tugas/halaman
+     * sebuah kursus gagal diambil, item kursus itu dari [previous] dipertahankan; bila nilai gagal, nilai lama dipertahankan; bila Moodle
+     * mengembalikan daftar kursus kosong padahal sebelumnya ada, seluruh data lama dipertahankan.
+     */
+    fun fetchAll(site: Site, now: Long = System.currentTimeMillis() / 1000, previous: Snapshot? = null): Snapshot {
         val warnings = mutableListOf<String>()
-        fun <T> safe(label: String, fallback: T, block: () -> T): T = try { block() } catch (e: ApiError) { warnings += "$label: ${e.message}"; fallback }
         fun call(fn: String, p: Map<String, Any> = emptyMap()) = call(site.url, site.token, fn, p)
 
-        val enrolled = call("core_enrol_get_users_courses", mapOf("userid" to site.userId)) as JSONArray
+        val enrolled = call("core_enrol_get_users_courses", mapOf("userid" to site.userId)) as? JSONArray ?: throw ApiError("Respons daftar kursus tidak dikenali")
+        if (enrolled.length() == 0 && previous?.courses?.isNotEmpty() == true) {
+            return previous.copy(warnings = listOf("Moodle mengembalikan daftar kursus kosong; data lama dipertahankan (keluar dari akun bila memang sudah tidak ada kursus)"))
+        }
         val ids = (0 until enrolled.length()).map { enrolled.getJSONObject(it).getLong("id") }
         val assignByCm = hashMapOf<Long, JSONObject>()
         val pageByCm = hashMapOf<Long, String>()
+        var assignFailed = false; var pagesFailed = false
         if (ids.isNotEmpty()) {
-            safe("Tugas", Unit) {
-                val a = call("mod_assign_get_assignments", mapOf("courseids" to ids)) as JSONObject
-                val cs = a.getJSONArray("courses")
-                for (i in 0 until cs.length()) { val l = cs.getJSONObject(i).getJSONArray("assignments"); for (j in 0 until l.length()) l.getJSONObject(j).let { assignByCm[it.getLong("cmid")] = it } }
-            }
-            safe("Halaman", Unit) {
+            assignFailed = attempt(warnings, "Tugas") {
+                val cs = (call("mod_assign_get_assignments", mapOf("courseids" to ids)) as JSONObject).optJSONArray("courses") ?: JSONArray()
+                for (i in 0 until cs.length()) {
+                    val l = cs.getJSONObject(i).optJSONArray("assignments") ?: continue      // kursus tanpa tugas tidak punya kunci ini
+                    for (j in 0 until l.length()) l.getJSONObject(j).let { assignByCm[it.getLong("cmid")] = it }
+                }
+            } == null
+            pagesFailed = attempt(warnings, "Halaman") {
                 val p = (call("mod_page_get_pages_by_courses", mapOf("courseids" to ids)) as JSONObject).optJSONArray("pages") ?: JSONArray()
                 for (i in 0 until p.length()) p.getJSONObject(i).let { pageByCm[it.getLong("coursemodule")] = it.optString("content") }
-            }
+            } == null
         }
 
         val courses = (0 until enrolled.length()).map { ci ->
             val c = enrolled.getJSONObject(ci)
             val cid = c.getLong("id")
             val short = c.optString("shortname", cid.toString())
+            val prev = previous?.courses?.firstOrNull { it.id == cid }
             val items = mutableListOf<Item>()
-            val sections = safe("Konten $short", JSONArray()) { call("core_course_get_contents", mapOf("courseid" to cid)) as JSONArray }
-            for (si in 0 until sections.length()) {
-                val s = sections.getJSONObject(si)
+            val sections = attempt(warnings, "Konten $short") { call("core_course_get_contents", mapOf("courseid" to cid)) as JSONArray }
+            for (si in 0 until (sections?.length() ?: 0)) {
+                val s = sections!!.optJSONObject(si) ?: continue
                 val sname = s.optString("name").takeIf { it != "General" } ?: ""
                 val mods = s.optJSONArray("modules") ?: continue
                 for (mi in 0 until mods.length()) {
-                    val m = mods.getJSONObject(mi)
+                    // satu modul rusak (tanpa id, tipe tak terduga) dilewati dengan peringatan; tidak boleh menggagalkan seluruh sinkron
+                    val m = try { mods.getJSONObject(mi).also { it.getLong("id") } } catch (e: org.json.JSONException) { warnings += "Konten $short: modul ke-${mi + 1} tidak valid, dilewati"; continue }
                     if (m.has("uservisible") && !m.getBoolean("uservisible")) continue
                     val id = m.getLong("id"); val name = m.optString("name"); val mod = m.optString("modname")
                     val files = (m.optJSONArray("contents") ?: JSONArray()).let { arr ->
@@ -206,27 +225,47 @@ object MoodleApi {
                         mod == "page" -> items += Item(id, "page", name, sname, htmlToText(pageByCm[id] ?: m.optString("description")), null, null, emptyList())
                         mod == "label" -> htmlToText(m.optString("description")).takeIf { it.isNotEmpty() }?.let { t -> items += Item(id, "page", t.take(60), sname, t, null, null, emptyList()) }
                         else -> {
-                            // resource/folder/url/forum/quiz/...: tautan ke Moodle + file yang bisa diunduh
+                            // resource/folder/url/forum/quiz/dll: tautan ke Moodle + file yang bisa diunduh
                             val link = if (mod == "url") m.optJSONArray("contents")?.optJSONObject(0)?.optString("fileurl") ?: m.optString("url") else m.optString("url")
                             if (!link.isNullOrEmpty() || files.isNotEmpty()) items += Item(id, "link", name, sname, link ?: "", null, null, files)
                         }
                     }
                 }
             }
-            val gradeData = safe("Nilai $short", JSONObject()) { call("gradereport_user_get_grade_items", mapOf("courseid" to cid, "userid" to site.userId)) as JSONObject }
-            val gi = gradeData.optJSONArray("usergrades")?.optJSONObject(0)?.optJSONArray("gradeitems") ?: JSONArray()
-            val grades = (0 until gi.length()).map { gi.getJSONObject(it) }.mapNotNull { g ->
-                val n = g.optString("itemname").takeIf { !g.isNull("itemname") && it.isNotEmpty() } ?: if (g.optString("itemtype") == "course") "Total kursus" else return@mapNotNull null
-                Grade(n, if (g.isNull("graderaw")) null else g.optDouble("graderaw"), if (g.isNull("grademax")) null else g.optDouble("grademax"))
+            // item gagal diambil sebagian -> pakai item lama kursus ini supaya materi/tenggat/file offline tidak hilang
+            val degraded = sections == null || assignFailed || pagesFailed
+            val keptItems = if (degraded && prev != null) prev.items else items
+
+            val gradeData = attempt(warnings, "Nilai $short") { call("gradereport_user_get_grade_items", mapOf("courseid" to cid, "userid" to site.userId)) as JSONObject }
+            val grades = if (gradeData == null && prev != null) prev.grades else {
+                val gi = gradeData?.optJSONArray("usergrades")?.optJSONObject(0)?.optJSONArray("gradeitems") ?: JSONArray()
+                (0 until gi.length()).map { gi.getJSONObject(it) }.mapNotNull { g ->
+                    val n = g.optString("itemname").takeIf { !g.isNull("itemname") && it.isNotEmpty() } ?: if (g.optString("itemtype") == "course") "Total kursus" else return@mapNotNull null
+                    Grade(n, if (g.isNull("graderaw")) null else g.optDouble("graderaw"), if (g.isNull("grademax")) null else g.optDouble("grademax"))
+                }
             }
-            Course(cid, c.optString("fullname", short), htmlToText(c.optString("summary")), items, grades)
+            Course(cid, c.optString("fullname", short), htmlToText(c.optString("summary")), keptItems, grades)
         }
         return Snapshot(now, courses, warnings)
     }
 }
 
-/** Nama aman untuk disk: buang karakter berbahaya dan titik di awal. */
-fun safeName(n: String): String = n.replace(Regex("[^\\p{L}\\p{N}._ ()-]+"), "_").trim().trimStart('.').take(120).ifEmpty { "_" }
+/**
+ * Nama aman untuk disk: buang karakter berbahaya dan titik di awal. Nama panjang dipotong **dengan mempertahankan ekstensi**
+ * dan diberi sufiks hash agar dua nama yang sama di awal tidak bertabrakan.
+ */
+fun safeName(n: String): String {
+    val cleaned = n.replace(Regex("[^\\p{L}\\p{N}._ ()-]+"), "_").trim().trimStart('.')
+    if (cleaned.isEmpty()) return "_"
+    if (cleaned.length <= 120) return cleaned
+    val dot = cleaned.lastIndexOf('.')
+    val ext = if (dot > 0 && cleaned.length - dot <= 10) cleaned.substring(dot) else ""
+    val hash = Integer.toHexString(n.hashCode())
+    return cleaned.take(120 - ext.length - hash.length - 1) + "~" + hash + ext
+}
 
-/** Pastikan [child] berada di dalam [root] (anti path traversal). */
-fun File.isInside(root: File) = canonicalPath.startsWith(root.canonicalPath + File.separator)
+/** Pastikan file berada di dalam [root] (anti path traversal); murni string, tanpa akses disk (dipanggil sangat sering). */
+fun File.isInside(root: File): Boolean {
+    val p = toPath().normalize(); val r = root.toPath().normalize()
+    return p != r && p.startsWith(r)
+}

@@ -66,7 +66,7 @@ fun AiScreen(vm: MainViewModel, onReview: () -> Unit) {
     val state = AiState(hasKey, provider, keys, model, mode, courses, cid, soc, chat, busy, err, summary, quiz, draft, cards, pdfs, sel, usage, ai.suggestions(course != null))
     val actions = remember(ai) {
         AiActions({ ai.setKey(it) }, ai::setProvider, vm::openLink, ai::selectCourse, { ai.mode.value = it }, ai::send, ai::stop, ai::newChat, { ai.socratic.value = it }, ai::retry,
-            ai::summarize, { ai.makeQuiz() }, { ai.makeCards() }, ai::saveDraft, ai::discardDraft, ai::toggle, vm.repo::deleteCard, onReview)
+            ai::summarize, { ai.makeQuiz() }, { ai.makeCards() }, ai::saveDraft, ai::discardDraft, ai::toggle, vm::deleteCard, onReview)
     }
     AiContent(state, actions)
 }
@@ -223,7 +223,7 @@ private fun Message(m: ChatMsg, model: String, streaming: Boolean) {
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             Box(Modifier.size(28.dp).clip(CircleShape).background(cs.tertiaryContainer), contentAlignment = Alignment.Center) { Icon(Icons.Rounded.AutoAwesome, null, Modifier.size(16.dp), tint = cs.tertiary) }
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                if (m.text.isEmpty()) TypingDots() else MarkdownText(m.text)
+                if (m.text.isEmpty()) { if (streaming) TypingDots() } else MarkdownText(m.text)
                 if (!streaming && m.text.isNotEmpty()) Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(m.usage?.label(model) ?: "", Modifier.weight(1f), style = MaterialTheme.typography.labelSmall, color = cs.outline, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     IconButton({ clip.setText(AnnotatedString(m.text)) }, Modifier.size(32.dp)) { Icon(Icons.Rounded.ContentCopy, "Salin jawaban", Modifier.size(16.dp), tint = cs.outline) }
@@ -429,7 +429,7 @@ private fun KeySetup(p: Provider, a: AiActions) {
 @Composable
 fun ReviewScreen(vm: MainViewModel, onBack: () -> Unit) {
     val initial = remember { vm.repo.cards.value.filter { Srs.isDue(it) } }
-    ReviewContent(initial, onRate = { c, r -> Srs.review(c, r).also { vm.repo.updateCard(it) } }, onClose = onBack)
+    ReviewContent(initial, onRate = vm::rateCard, onClose = onBack)
 }
 
 @Composable

@@ -35,7 +35,8 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         Notif.ensureChannels(this)
-        intent?.let(::route)
+        // jangan memproses ulang callback SSO yang sama saat aktivitas dibuat ulang (rotasi/ganti tema)
+        if (savedInstanceState == null) intent?.let(::route)
         setContent { App(vm) }
     }
 
@@ -47,7 +48,7 @@ class MainActivity : ComponentActivity() {
     /** Callback SSO Moodle: moodlemobile://token=... */
     private fun route(i: Intent) {
         val d = i.data ?: return
-        if (d.scheme == Sso.SCHEME) vm.handleCallback(d)
+        if (d.scheme == Sso.SCHEME) { i.data = null; vm.handleCallback(d) }
     }
 }
 
@@ -102,15 +103,15 @@ fun MainScreen(vm: MainViewModel) {
     val hasKey by vm.ai.hasKey.collectAsStateWithLifecycle()
 
     val courses = snap?.courses.orEmpty()
-    val stats = remember(snap, tick) { courses.associate { it.id to vm.repo.stats(it) } }
-    val nowSec = remember(snap, tick, busy) { System.currentTimeMillis() / 1000 }
+    val stats by vm.stats.collectAsStateWithLifecycle()
+    val nowSec by rememberNowSec(snap, tick)
     val rows = remember(snap) { deadlinesOf(snap) }
     val urgent = remember(rows, done, nowSec) { rows.count { it.item.id !in done && it.item.dueAt!! in nowSec..(nowSec + 86400) } }
     val dueCards = remember(cards) { cards.count { Srs.isDue(it) } }
 
     // izin notifikasi untuk unduhan dan pengingat (Android 13+)
     val perm = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { }
-    LaunchedEffect(Unit) { if (Build.VERSION.SDK_INT >= 33 && !Notif.canPost(vm.getApplication())) perm.launch(Manifest.permission.POST_NOTIFICATIONS) }
+    LaunchedEffect(Unit) { if (Build.VERSION.SDK_INT >= 33 && !Notif.canPost(vm.getApplication()) && !vm.repo.askedNotif) { vm.repo.askedNotif = true; perm.launch(Manifest.permission.POST_NOTIFICATIONS) } }
 
     BackHandler(enabled = overlay.isNotEmpty() || tab != 0) { if (overlay.isNotEmpty()) overlay = "" else tab = 0 }
 

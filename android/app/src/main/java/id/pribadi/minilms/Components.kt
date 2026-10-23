@@ -166,3 +166,9 @@ fun ProgressBar(progress: Float, modifier: Modifier = Modifier, color: Color = M
         Box(Modifier.fillMaxWidth(p).fillMaxHeight().clip(CircleShape).background(color))
     }
 }
+
+/** Waktu sekarang (detik) yang menyegarkan diri tiap menit dan saat [key] berubah, supaya hitung mundur tidak basi. */
+@Composable
+fun rememberNowSec(vararg key: Any?): androidx.compose.runtime.State<Long> = androidx.compose.runtime.produceState(System.currentTimeMillis() / 1000, *key) {
+    while (true) { value = System.currentTimeMillis() / 1000; kotlinx.coroutines.delay(60_000) }
+}

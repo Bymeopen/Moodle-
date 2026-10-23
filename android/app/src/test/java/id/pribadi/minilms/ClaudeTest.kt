@@ -113,7 +113,7 @@ data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text
         c = Srs.review(c, "good", d); assertEquals(1, c.interval); assertEquals("2026-01-02", c.due)
         c = Srs.review(c, "good", d); assertEquals(6, c.interval)
         c = Srs.review(c, "good", d); assertEquals(15, c.interval)
-        val l = Srs.review(c, "again", d); assertEquals(0, l.interval); assertEquals(0, l.reps); assertEquals(d.toString(), l.due); assertTrue(l.ease < c.ease && l.ease >= 1.3)
+        val l = Srs.review(c, "again", d); assertEquals(0, l.interval); assertEquals(0, l.reps); assertEquals(d.toString(), l.due); assertEquals(c.ease, l.ease, 0.0)   // SM-2: gagal tidak mengubah ease
         assertEquals(c, JSONObject(c.toJson().toString()).toCard())
         assertThrows(IllegalArgumentException::class.java) { Srs.review(c, "x", d) }
     }

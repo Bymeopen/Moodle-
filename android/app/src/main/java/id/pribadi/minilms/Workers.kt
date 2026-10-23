@@ -117,7 +117,7 @@ object Jobs {
             .setConstraints(Constraints.Builder().setRequiredNetworkType(if (repo.wifiOnly) NetworkType.UNMETERED else NetworkType.CONNECTED).build())
             .setInputData(workDataOf(DownloadWorker.KEY_COURSE to (courseId ?: 0L)))
             .build()
-        WorkManager.getInstance(ctx).enqueueUniqueWork(DL, ExistingWorkPolicy.KEEP, req)
+        WorkManager.getInstance(ctx).enqueueUniqueWork(DL, ExistingWorkPolicy.REPLACE, req)   // permintaan baru (mis. kursus lain) menggantikan, bukan dibuang; file selesai tidak diulang
     }
     fun pause(ctx: Context) { WorkManager.getInstance(ctx).cancelUniqueWork(DL) }
     fun name() = DL

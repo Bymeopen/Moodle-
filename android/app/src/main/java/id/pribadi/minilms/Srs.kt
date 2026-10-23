@@ -17,7 +17,8 @@ object Srs {
         var reps = c.reps; var interval = c.interval
         if (q < 3) { reps = 0; interval = 0 }
         else { interval = when (reps) { 0 -> 1; 1 -> 6; else -> Math.round(interval * c.ease).toInt() }; reps += 1 }
-        val ease = Math.round(maxOf(1.3, c.ease + 0.1 - (5 - q) * (0.08 + (5 - q) * 0.02)) * 100) / 100.0
+        // SM-2 asli: gagal (q<3) hanya mengulang dari awal, faktor kemudahan tidak diubah
+        val ease = if (q < 3) c.ease else Math.round(maxOf(1.3, c.ease + 0.1 - (5 - q) * (0.08 + (5 - q) * 0.02)) * 100) / 100.0
         return c.copy(ease = ease, interval = interval, reps = reps, due = today.plusDays(interval.toLong()).toString())
     }
 

@@ -24,7 +24,14 @@ object SecretStore {
         return gen.generateKey()
     }
 
+    private fun resetKey() { runCatching { KeyStore.getInstance("AndroidKeyStore").apply { load(null) }.deleteEntry(ALIAS) } }
+
+    /** Simpan terenkripsi. Keystore yang bermasalah (kunci rusak setelah restore, bug perangkat) dicoba sekali lagi dengan kunci baru. */
     fun put(ctx: Context, name: String, value: String) {
+        try { putOnce(ctx, name, value) } catch (e: Exception) { resetKey(); putOnce(ctx, name, value) }
+    }
+
+    private fun putOnce(ctx: Context, name: String, value: String) {
         val c = Cipher.getInstance("AES/GCM/NoPadding").apply { init(Cipher.ENCRYPT_MODE, key()) }
         val blob = c.iv + c.doFinal(value.toByteArray())
         ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putString(name, Base64.encodeToString(blob, Base64.NO_WRAP)).apply()

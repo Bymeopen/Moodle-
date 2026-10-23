@@ -60,6 +60,7 @@ fun HomeScreen(
                 }
             }
         }
+        snapshot?.warnings?.takeIf { it.isNotEmpty() }?.let { w -> item { InfoBanner("Sebagian data tidak bisa diperbarui (data lama dipertahankan): ${w.joinToString("; ")}", tone = Tone.WARN, icon = Icons.Rounded.Info) } }
         if (!online) item { InfoBanner("Offline — menampilkan data yang tersimpan di ponsel.", tone = Tone.WARN, icon = Icons.Rounded.WifiOff) }
         syncError?.let { e -> item { InfoBanner("Sinkron gagal: $e", tone = Tone.ERROR, icon = Icons.Rounded.ErrorOutline, action = "Coba lagi", onAction = onSync) } }
 
@@ -150,7 +151,7 @@ private fun OfflineCard(files: Int, got: Int, gotBytes: Long, allBytes: Long, dl
                 val f = if (dl.bytesTotal > 0) (dl.bytes.toFloat() / dl.bytesTotal).coerceIn(0f, 1f) else 0f
                 ProgressBar(f, color = MaterialTheme.colorScheme.secondary)
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("${dl.done}/${dl.total} · ${dl.name}", Modifier.weight(1f), style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text(if (dl.waiting) "Menunggu Wi-Fi atau koneksi… unduhan dimulai otomatis" else "${dl.done}/${dl.total} · ${dl.name}", Modifier.weight(1f), style = MaterialTheme.typography.bodySmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
                     TextButton(onPause) { Icon(Icons.Rounded.Pause, null, Modifier.size(18.dp)); Spacer(Modifier.width(4.dp)); Text("Jeda") }
                 }
             } else {
