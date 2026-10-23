@@ -25,6 +25,8 @@ import androidx.compose.ui.viewinterop.AndroidView
 object WebPolicy {
     private val videoHosts = listOf("youtube.com", "youtube-nocookie.com", "youtu.be", "vimeo.com", "googlevideo.com", "ytimg.com", "gstatic.com")
     fun hostOf(url: String): String? = try { java.net.URI(url).takeIf { it.scheme == "https" || it.scheme == "http" }?.host?.lowercase() } catch (e: Exception) { null }
+    /** Tautan video YouTube (untuk tombol "Buka di YouTube"). */
+    fun isYoutube(url: String): Boolean { val h = hostOf(url) ?: return false; return h == "youtu.be" || h == "youtube.com" || h.endsWith(".youtube.com") }
     fun allowedInApp(startHost: String?, target: String): Boolean {
         val h = hostOf(target) ?: return false
         return h == startHost || videoHosts.any { h == it || h.endsWith(".$it") }

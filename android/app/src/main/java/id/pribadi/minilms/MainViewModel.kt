@@ -399,6 +399,13 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /** Buka video di aplikasi YouTube resmi (di sana unduhan offline resmi tersedia); bila tidak terpasang, putar di dalam aplikasi. */
+    fun openYoutubeApp(url: String) {
+        if (!WebPolicy.isYoutube(url)) { openInApp(url); return }
+        try { getApplication<Application>().startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)).setPackage("com.google.android.youtube").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
+        catch (e: ActivityNotFoundException) { openInApp(url) }
+    }
+
     fun openLink(url: String) {
         val ctx = getApplication<Application>()
         val u = Uri.parse(url)

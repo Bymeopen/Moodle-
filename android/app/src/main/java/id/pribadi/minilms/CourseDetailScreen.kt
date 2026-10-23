@@ -35,7 +35,7 @@ fun CourseDetailScreen(vm: MainViewModel, c: Course, st: Repo.CourseStats, onBac
     CourseDetailContent(c, st, nowSec, done, dl, progress,
         isDownloaded = { i, f -> tick >= 0 && vm.repo.isDownloaded(c.id, i.id, f) }, fileKey = { i, f -> vm.repo.fileKey(c.id, i.id, f) },
         onBack = onBack, onDownloadCourse = { vm.downloadCourse(c.id) }, onPause = vm::pause, onDeleteDownloads = { vm.deleteDownloads(c.id) },
-        onOpenFile = { i, f -> vm.open(c, i, f) }, onDownloadFile = { i, f -> vm.downloadFile(c, i, f) }, onLink = vm::openInApp, onOpenMoodle = vm::openMoodle, onToggleDone = vm::toggleDone,
+        onOpenFile = { i, f -> vm.open(c, i, f) }, onDownloadFile = { i, f -> vm.downloadFile(c, i, f) }, onLink = vm::openInApp, onOpenMoodle = vm::openMoodle, onYoutube = vm::openYoutubeApp, onToggleDone = vm::toggleDone,
         onAskAi = onAskAi, onExportZip = { zip.launch("${safeName(c.name)}.zip") }, onShareNotebook = { vm.shareToNotebook(c) }, onOpenWeb = vm::openWeb)
 }
 
@@ -46,7 +46,7 @@ fun CourseDetailContent(
     c: Course, st: Repo.CourseStats, nowSec: Long, doneIds: Set<Long>, dl: DlState, fileProgress: Map<String, Float>,
     isDownloaded: (Item, FileRef) -> Boolean, fileKey: (Item, FileRef) -> String,
     onBack: () -> Unit, onDownloadCourse: () -> Unit, onPause: () -> Unit, onDeleteDownloads: () -> Unit,
-    onOpenFile: (Item, FileRef) -> Unit, onDownloadFile: (Item, FileRef) -> Unit, onLink: (String) -> Unit, onOpenMoodle: (String) -> Unit, onToggleDone: (Long) -> Unit,
+    onOpenFile: (Item, FileRef) -> Unit, onDownloadFile: (Item, FileRef) -> Unit, onLink: (String) -> Unit, onOpenMoodle: (String) -> Unit, onYoutube: (String) -> Unit = {}, onToggleDone: (Long) -> Unit,
     onAskAi: (AiMode) -> Unit, onExportZip: () -> Unit, onShareNotebook: () -> Unit, onOpenWeb: (String) -> Unit,
 ) {
     var tab by rememberSaveable { mutableStateOf(DetailTab.MATERI) }
@@ -134,7 +134,7 @@ fun CourseDetailContent(
                             Icon(if (open) Icons.Rounded.ExpandLess else Icons.Rounded.ExpandMore, null, tint = MaterialTheme.colorScheme.outline)
                         }
                     }
-                    if (open) items(list.size, key = { "m_${list[it].id}" }) { idx -> MaterialCard(list[idx], isDownloaded, fileKey, fileProgress, onOpenFile, onDownloadFile, onLink, onOpenMoodle) }
+                    if (open) items(list.size, key = { "m_${list[it].id}" }) { idx -> MaterialCard(list[idx], isDownloaded, fileKey, fileProgress, onOpenFile, onDownloadFile, onLink, onOpenMoodle, onYoutube) }
                 }
             }
             DetailTab.TUGAS -> {
@@ -161,7 +161,7 @@ private fun AiChip(icon: androidx.compose.ui.graphics.vector.ImageVector, label:
 
 @Composable
 private fun MaterialCard(it: Item, isDownloaded: (Item, FileRef) -> Boolean, fileKey: (Item, FileRef) -> String, progress: Map<String, Float>,
-                         onOpenFile: (Item, FileRef) -> Unit, onDownloadFile: (Item, FileRef) -> Unit, onLink: (String) -> Unit, onOpenMoodle: (String) -> Unit) {
+                         onOpenFile: (Item, FileRef) -> Unit, onDownloadFile: (Item, FileRef) -> Unit, onLink: (String) -> Unit, onOpenMoodle: (String) -> Unit, onYoutube: (String) -> Unit) {
     var open by rememberSaveable(it.id) { mutableStateOf(false) }
     val cs = MaterialTheme.colorScheme
     val hasText = (it.type == "page" || it.type == "forum") && it.content.isNotBlank()
@@ -186,6 +186,8 @@ private fun MaterialCard(it: Item, isDownloaded: (Item, FileRef) -> Boolean, fil
                 else Text(it.content, style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant, maxLines = 2, overflow = TextOverflow.Ellipsis)
             }
             it.files.forEach { f -> FileRow(it, f, isDownloaded(it, f), progress[fileKey(it, f)], onOpenFile, onDownloadFile) }
+            if (it.type == "link" && it.files.isEmpty() && WebPolicy.isYoutube(it.content))
+                OutlinedButton({ onYoutube(it.content) }, Modifier.fillMaxWidth()) { Icon(Icons.Rounded.PlayCircle, null, Modifier.size(18.dp)); Spacer(Modifier.width(8.dp)); Text("Buka di YouTube (unduh resmi di sana)") }
             if (it.type == "forum" && it.url.isNotEmpty()) OutlinedButton({ onOpenMoodle(it.url) }, Modifier.fillMaxWidth()) { Icon(Icons.Rounded.Forum, null, Modifier.size(18.dp)); Spacer(Modifier.width(8.dp)); Text("Buka forum / balas") }
         }
     }

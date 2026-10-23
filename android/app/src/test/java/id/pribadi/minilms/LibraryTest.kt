@@ -95,6 +95,8 @@ class LibraryTest {
         assertFalse(WebPolicy.allowedInApp(h, "https://youtube.com.evil.example/"))
         assertFalse(WebPolicy.allowedInApp(h, "intent://x")); assertFalse(WebPolicy.allowedInApp(h, "javascript:alert(1)"))
         assertNull(WebPolicy.hostOf("file:///etc/passwd"))
+        assertTrue(WebPolicy.isYoutube("https://m.youtube.com/watch?v=x")); assertTrue(WebPolicy.isYoutube("https://youtu.be/x"))
+        assertFalse(WebPolicy.isYoutube("https://youtube.com.evil.example/")); assertFalse(WebPolicy.isYoutube("https://lms.kampus.ac.id/"))
     }
 }
 
