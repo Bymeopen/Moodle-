@@ -237,7 +237,10 @@ fun CourseScreen(vm: MainViewModel, c: Course, onBack: () -> Unit) {
                     Button({ if (dl.running) vm.pause() else vm.downloadCourse(c.id) }, enabled = dl.running || stats.downloaded < stats.files) { Text(if (dl.running) "Jeda unduhan" else "Unduh kursus ini") }
                     if (stats.downloaded > 0) OutlinedButton({ vm.deleteDownloads(c.id) }) { Text("Hapus unduhan") }
                 }
-                OutlinedButton({ vm.shareToNotebook(c) }) { Text("Kirim ke NotebookLM") }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton({ vm.shareToNotebook(c) }) { Text("Kirim ke NotebookLM") }
+                    TextButton({ vm.openNotebookLm() }) { Text("Buka NotebookLM") }
+                }
             }
         }
         sections.forEach { (name, list) ->
@@ -372,6 +375,7 @@ fun SettingsTab(vm: MainViewModel) {
             Models.all.forEach { (id, label) -> Row(verticalAlignment = Alignment.CenterVertically) { RadioButton(model == id, { vm.ai.setModel(id) }); Text(label) } }
             if (hasKey) OutlinedButton({ vm.ai.clearKey() }) { Text("Hapus kunci API") } else Text("Kunci API belum diisi (tab AI).", style = MaterialTheme.typography.bodySmall)
         } }
+        OutlinedButton({ vm.openNotebookLm() }, Modifier.fillMaxWidth()) { Text("Buka NotebookLM (login Google)") }
         Button({ confirmLogout = true }, colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error), modifier = Modifier.fillMaxWidth()) { Text("Keluar") }
     }
     if (confirmLogout) AlertDialog(onDismissRequest = { confirmLogout = false }, title = { Text("Keluar?") },

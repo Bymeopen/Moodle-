@@ -128,6 +128,19 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         } catch (e: ActivityNotFoundException) { _message.value = "Tidak ada aplikasi untuk menerima file" }
     }
 
+    /**
+     * Buka NotebookLM di Chrome Custom Tab. Google melarang login OAuth di WebView tertanam,
+     * sedangkan Custom Tab memakai sesi Google di browser dan tampil menyatu dengan aplikasi.
+     */
+    fun openNotebookLm() {
+        val ctx = getApplication<Application>()
+        val tab = androidx.browser.customtabs.CustomTabsIntent.Builder()
+            .setToolbarColor(0xFFF98012.toInt()).setShowTitle(true).build()
+        tab.intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        try { tab.launchUrl(ctx, Uri.parse("https://notebooklm.google.com")) }
+        catch (e: ActivityNotFoundException) { _message.value = "Tidak ada browser untuk membuka NotebookLM" }
+    }
+
     fun openLink(url: String) {
         val ctx = getApplication<Application>()
         val u = Uri.parse(url)
