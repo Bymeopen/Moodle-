@@ -8,7 +8,7 @@ import java.net.URL
 /** PDF terlampir (base64) yang dibaca langsung oleh Claude. */
 data class Doc(val name: String, val base64: String)
 
-data class ChatMsg(val role: String, val text: String, val docs: List<Doc> = emptyList())
+data class ChatMsg(val role: String, val text: String, val docs: List<Doc> = emptyList(), val usage: Usage? = null)
 
 object Models {
     // default mengikuti rekomendasi Claude API; Sonnet/Haiku lebih murah untuk pemakaian harian
@@ -26,7 +26,7 @@ class ClaudeClient(private val apiKey: String, private val model: String, privat
         const val FALLBACK_BETA = "server-side-fallback-2026-07-01"
 
         /** Body permintaan. Fallback server-side (jika model menolak karena safety) hanya untuk Opus/Sonnet. */
-        fun body(model: String, system: String, messages: List<ChatMsg>, stream: Boolean, schema: JSONObject? = null, withFallback: Boolean = true): JSONObject {
+        fun body(model: String, system: String, messages: List<ChatMsg>, stream: Boolean, schema: JSONObject? = null, withFallback: Boolean = true, cache: Boolean = false): JSONObject {
             val b = JSONObject().put("model", model).put("max_tokens", if (stream) 64000 else 16000).put("system", system)
                 .put("messages", JSONArray(messages.map { m ->
                     // dengan lampiran: content = [dokumen..., teks]; tanpa lampiran: string biasa
@@ -39,16 +39,24 @@ class ClaudeClient(private val apiKey: String, private val model: String, privat
             if (stream) b.put("stream", true)
             if (schema != null) b.put("output_config", JSONObject().put("format", JSONObject().put("type", "json_schema").put("schema", schema)))
             if (withFallback && !model.contains("haiku")) b.put("fallbacks", "default")
+            // cache otomatis blok terakhir: pertanyaan lanjutan dalam chat membayar materi/PDF di harga cache (±10%)
+            if (cache) b.put("cache_control", JSONObject().put("type", "ephemeral"))
             return b
         }
 
         /** Satu baris SSE -> potongan teks (atau null). Melempar bila event error; mengisi [stop] bila ada stop_reason khusus. */
-        fun parseSse(line: String, stop: (String) -> Unit = {}): String? {
+        fun parseSse(line: String, stop: (String) -> Unit = {}, usage: (Usage) -> Unit = {}): String? {
             if (!line.startsWith("data:")) return null
             val j = try { JSONObject(line.removePrefix("data:").trim()) } catch (e: Exception) { return null }
             return when (j.optString("type")) {
                 "content_block_delta" -> j.optJSONObject("delta")?.takeIf { it.optString("type") == "text_delta" }?.optString("text")
-                "message_delta" -> { j.optJSONObject("delta")?.optString("stop_reason")?.takeIf { it.isNotEmpty() && it != "null" }?.let(stop); null }
+                "message_start" -> { j.optJSONObject("message")?.optJSONObject("usage")?.let { u ->
+                    usage(Usage(input = u.optLong("input_tokens"), cacheRead = u.optLong("cache_read_input_tokens"), cacheWrite = u.optLong("cache_creation_input_tokens"), output = u.optLong("output_tokens"))) }; null }
+                "message_delta" -> {
+                    j.optJSONObject("delta")?.optString("stop_reason")?.takeIf { it.isNotEmpty() && it != "null" }?.let(stop)
+                    j.optJSONObject("usage")?.let { u -> if (u.has("output_tokens")) usage(Usage(output = u.optLong("output_tokens"))) }   // output kumulatif
+                    null
+                }
                 "error" -> throw ApiError(j.optJSONObject("error")?.optString("message") ?: "Galat dari Claude")
                 else -> null
             }
@@ -90,15 +98,20 @@ class ClaudeClient(private val apiKey: String, private val model: String, privat
     }
 
     /** Streaming teks. [onText] dipanggil per potongan. Mengembalikan teks lengkap. */
-    fun stream(system: String, messages: List<ChatMsg>, shouldStop: () -> Boolean = { false }, onText: (String) -> Unit): String {
-        val c = send { fb -> body(model, system, messages, stream = true, withFallback = fb) }
+    fun stream(system: String, messages: List<ChatMsg>, shouldStop: () -> Boolean = { false }, cache: Boolean = false, onUsage: (Usage) -> Unit = {}, onText: (String) -> Unit): String {
+        val c = send { fb -> body(model, system, messages, stream = true, withFallback = fb, cache = cache && fb) }
         val all = StringBuilder(); var stopReason = ""
+        var usage = Usage()
         try {
             c.inputStream.bufferedReader().use { r ->
                 while (true) {
                     if (shouldStop()) break
                     val line = r.readLine() ?: break
-                    parseSse(line) { stopReason = it }?.let { all.append(it); onText(it) }
+                    parseSse(line, { stopReason = it }) { u ->
+                        // message_start membawa input/cache; message_delta hanya output kumulatif
+                        usage = if (u.input + u.cacheRead + u.cacheWrite > 0) u.copy(output = maxOf(u.output, usage.output)) else usage.copy(output = u.output)
+                        onUsage(usage)
+                    }?.let { all.append(it); onText(it) }
                 }
             }
         } finally { c.disconnect() }

@@ -58,7 +58,7 @@ class ClaudeTest {
         assertEquals("Halo", ClaudeClient.parseSse("""data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"Halo"}}"""))
         assertNull(ClaudeClient.parseSse("""data: {"type":"content_block_delta","delta":{"type":"thinking_delta","thinking":""}}"""))
         assertNull(ClaudeClient.parseSse("event: ping")); assertNull(ClaudeClient.parseSse("data: bukan json"))
-        var stop = ""; ClaudeClient.parseSse("""data: {"type":"message_delta","delta":{"stop_reason":"refusal"}}""") { stop = it }; assertEquals("refusal", stop)
+        var stop = ""; ClaudeClient.parseSse("""data: {"type":"message_delta","delta":{"stop_reason":"refusal"}}""", stop = { stop = it }); assertEquals("refusal", stop)
         assertThrows(ApiError::class.java) { ClaudeClient.parseSse("""data: {"type":"error","error":{"message":"overloaded"}}""") }
     }
 

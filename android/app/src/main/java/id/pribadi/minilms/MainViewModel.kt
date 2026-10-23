@@ -3,6 +3,9 @@ package id.pribadi.minilms
 import android.app.Application
 import android.content.ActivityNotFoundException
 import android.content.Intent
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
 import android.net.Uri
 import android.webkit.MimeTypeMap
 import androidx.core.content.FileProvider
@@ -11,14 +14,16 @@ import androidx.lifecycle.viewModelScope
 import androidx.work.WorkInfo
 import androidx.work.WorkManager
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
+const val NOTEBOOK_MAX_SOURCES = 50
+private const val STALE_SECONDS = 30 * 60L
+
 data class DlState(val running: Boolean = false, val done: Int = 0, val total: Int = 0, val name: String = "", val bytes: Long = 0, val bytesTotal: Long = 0,
                    val failed: Int = 0, val error: String = "")
-
-const val NOTEBOOK_MAX_SOURCES = 50
 
 class MainViewModel(app: Application) : AndroidViewModel(app) {
     val repo = Repo.get(app)
@@ -27,13 +32,41 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     val tick = repo.tick
     val ai = AiController(app, repo, viewModelScope)
     val cards = repo.cards
+    val doneAssignments = repo.doneAssignments
+    val theme = repo.theme
 
     private val _busy = MutableStateFlow(false)
     val busy: StateFlow<Boolean> = _busy
     private val _message = MutableStateFlow<String?>(null)
     val message: StateFlow<String?> = _message
     fun clearMessage() { _message.value = null }
+    /** Galat sinkron otomatis/manual terakhir; tampil sebagai banner di Beranda. */
+    private val _syncError = MutableStateFlow<String?>(null)
+    val syncError: StateFlow<String?> = _syncError
 
+    // ---------- konektivitas ----------
+    private val cm = app.getSystemService(ConnectivityManager::class.java)
+    private fun isOnline() = cm?.activeNetwork?.let { cm.getNetworkCapabilities(it)?.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) == true } ?: false
+    private val _online = MutableStateFlow(isOnline())
+    val online: StateFlow<Boolean> = _online
+    private val netCb = object : ConnectivityManager.NetworkCallback() {
+        override fun onAvailable(network: Network) { _online.value = true }
+        override fun onLost(network: Network) { _online.value = isOnline() }
+    }
+
+    init {
+        runCatching { cm?.registerDefaultNetworkCallback(netCb) }
+        // sinkron otomatis saat dibuka bila data sudah > 30 menit dan ada koneksi
+        viewModelScope.launch {
+            delay(400)
+            val s = repo.snapshot.value
+            if (repo.site.value != null && _online.value && (s == null || System.currentTimeMillis() / 1000 - s.syncedAt > STALE_SECONDS)) sync(quiet = true)
+        }
+    }
+
+    override fun onCleared() { runCatching { cm?.unregisterNetworkCallback(netCb) } }
+
+    // ---------- unduhan massal (WorkManager) ----------
     val download: StateFlow<DlState> = WorkManager.getInstance(app).getWorkInfosForUniqueWorkFlow(Jobs.name())
         .map { list ->
             val w = list.firstOrNull() ?: return@map DlState()
@@ -45,6 +78,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 else -> DlState()
             }
         }.onEach { repo.bump() }.stateIn(viewModelScope, SharingStarted.Eagerly, DlState())
+
+    /** Progres unduhan per file (0..1), kunci = Repo.fileKey. */
+    private val _fileProgress = MutableStateFlow<Map<String, Float>>(emptyMap())
+    val fileProgress: StateFlow<Map<String, Float>> = _fileProgress
 
     private fun fail(e: Throwable) { _message.value = e.message ?: e.javaClass.simpleName }
 
@@ -92,15 +129,47 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     // ---------- data ----------
-    fun sync() = launchBusy { val s = repo.sync(); if (s.warnings.isNotEmpty()) _message.value = "Selesai dengan peringatan: " + s.warnings.joinToString("; ") }
+    /** [quiet] = sinkron otomatis: galat hanya jadi banner, bukan snackbar. */
+    fun sync(quiet: Boolean = false) {
+        if (_busy.value) return
+        viewModelScope.launch {
+            _busy.value = true
+            try {
+                val s = withContext(Dispatchers.IO) { repo.sync() }
+                _syncError.value = null
+                if (!quiet && s.warnings.isNotEmpty()) _message.value = "Selesai dengan peringatan: " + s.warnings.joinToString("; ")
+            } catch (e: Exception) { _syncError.value = e.message ?: e.javaClass.simpleName } finally { _busy.value = false }
+        }
+    }
+
     fun downloadAll() { if (repo.pending().isEmpty()) _message.value = "Semua file sudah diunduh" else Jobs.download(getApplication()) }
     fun downloadCourse(id: Long) { if (repo.pending(id).isEmpty()) _message.value = "Semua file kursus ini sudah diunduh" else Jobs.download(getApplication(), id) }
     fun pause() = Jobs.pause(getApplication())
     fun deleteDownloads(courseId: Long? = null) { Jobs.pause(getApplication()); repo.deleteDownloads(courseId) }
+
+    /** Unduh satu file langsung (tanpa WorkManager) dengan progres per file. */
+    fun downloadFile(c: Course, i: Item, f: FileRef) {
+        val key = repo.fileKey(c.id, i.id, f)
+        if (key in _fileProgress.value) return
+        val site = repo.site.value ?: return
+        viewModelScope.launch {
+            _fileProgress.value = _fileProgress.value + (key to 0f)
+            try {
+                withContext(Dispatchers.IO) {
+                    var got = 0L
+                    repo.download(site, Pending(c, i, f), { false }) { n -> got += n; if (f.size > 0) _fileProgress.value = _fileProgress.value + (key to (got.toFloat() / f.size).coerceIn(0f, 1f)) }
+                }
+            } catch (e: Exception) { fail(e) } finally { _fileProgress.value = _fileProgress.value - key }
+        }
+    }
+
     fun logout() { Jobs.pause(getApplication()); Jobs.scheduleReminders(getApplication(), false); repo.logout() }
     fun setReminders(on: Boolean) { repo.reminders = on; Jobs.scheduleReminders(getApplication(), on) }
     fun setWifiOnly(on: Boolean) { repo.wifiOnly = on }
+    fun setTheme(m: ThemeMode) = repo.setTheme(m)
+    fun toggleDone(id: Long) = repo.setAssignmentDone(id, id !in repo.doneAssignments.value)
 
+    // ---------- file & tautan ----------
     /** Buka file unduhan dengan aplikasi lain (PDF viewer, dll.) lewat FileProvider. */
     fun open(c: Course, i: Item, f: FileRef) {
         val ctx = getApplication<Application>()
@@ -135,19 +204,6 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         } catch (e: ActivityNotFoundException) { _message.value = "Tidak ada aplikasi untuk menerima file" }
     }
 
-    /**
-     * Buka NotebookLM di Chrome Custom Tab. Google melarang login OAuth di WebView tertanam,
-     * sedangkan Custom Tab memakai sesi Google di browser dan tampil menyatu dengan aplikasi.
-     */
-    fun openNotebookLm() {
-        val ctx = getApplication<Application>()
-        val tab = androidx.browser.customtabs.CustomTabsIntent.Builder()
-            .setToolbarColor(0xFFF98012.toInt()).setShowTitle(true).build()
-        tab.intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        try { tab.launchUrl(ctx, Uri.parse("https://notebooklm.google.com")) }
-        catch (e: ActivityNotFoundException) { _message.value = "Tidak ada browser untuk membuka NotebookLM" }
-    }
-
     /** Tulis ZIP kursus ke lokasi pilihan pengguna (Storage Access Framework; tanpa izin penyimpanan). */
     fun exportZip(c: Course, uri: Uri) = launchBusy {
         val ctx = getApplication<Application>()
@@ -163,6 +219,19 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             ZipExport.write(it, entries, mapOf("$prefix/Ringkasan.md" to summary))
         }
         _message.value = "ZIP tersimpan (${entries.size} file + ringkasan)"
+    }
+
+    /**
+     * Buka NotebookLM di Chrome Custom Tab. Google melarang login OAuth di WebView tertanam,
+     * sedangkan Custom Tab memakai sesi Google di browser dan tampil menyatu dengan aplikasi.
+     */
+    fun openNotebookLm() {
+        val ctx = getApplication<Application>()
+        val tab = androidx.browser.customtabs.CustomTabsIntent.Builder()
+            .setToolbarColor(0xFFE8590C.toInt()).setShowTitle(true).build()
+        tab.intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        try { tab.launchUrl(ctx, Uri.parse("https://notebooklm.google.com")) }
+        catch (e: ActivityNotFoundException) { _message.value = "Tidak ada browser untuk membuka NotebookLM" }
     }
 
     fun openLink(url: String) {

@@ -44,6 +44,17 @@ class Repo private constructor(ctx: Context) {
     fun updateCard(c: Card) = saveCards(_cards.value.map { if (it.id == c.id) c else it })
     fun deleteCard(id: String) = saveCards(_cards.value.filter { it.id != id })
 
+    // ---------- tugas yang ditandai selesai (lokal) & tampilan ----------
+    private val _done = MutableStateFlow(prefs.getStringSet("done_assign", emptySet())!!.mapNotNull { it.toLongOrNull() }.toSet())
+    val doneAssignments: StateFlow<Set<Long>> = _done
+    fun setAssignmentDone(id: Long, done: Boolean) {
+        val n = if (done) _done.value + id else _done.value - id
+        prefs.edit().putStringSet("done_assign", n.map { it.toString() }.toSet()).apply(); _done.value = n
+    }
+    private val _theme = MutableStateFlow(runCatching { ThemeMode.valueOf(prefs.getString("theme", "SYSTEM")!!) }.getOrDefault(ThemeMode.SYSTEM))
+    val theme: StateFlow<ThemeMode> = _theme
+    fun setTheme(m: ThemeMode) { prefs.edit().putString("theme", m.name).apply(); _theme.value = m }
+
     var wifiOnly: Boolean
         get() = prefs.getBoolean("wifi_only", true)
         set(v) = prefs.edit().putBoolean("wifi_only", v).apply()
@@ -101,7 +112,8 @@ class Repo private constructor(ctx: Context) {
         return dest
     }
 
-    private fun key(courseId: Long, itemId: Long, f: FileRef) = "dl:$courseId/$itemId/${f.url.hashCode()}"
+    private fun key(courseId: Long, itemId: Long, f: FileRef) = "dl:" + fileKey(courseId, itemId, f)
+    fun fileKey(courseId: Long, itemId: Long, f: FileRef) = "$courseId/$itemId/${f.url.hashCode()}"
 
     fun isDownloaded(courseId: Long, itemId: Long, f: FileRef): Boolean {
         val file = fileOf(courseId, itemId, f)

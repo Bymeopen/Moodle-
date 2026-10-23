@@ -21,6 +21,10 @@ object Srs {
         return c.copy(ease = ease, interval = interval, reps = reps, due = today.plusDays(interval.toLong()).toString())
     }
 
+    /** Label interval berikutnya untuk tombol penilaian: "sebentar", "1 hari", "6 hari", "2 bln". */
+    fun intervalLabel(days: Int) = when { days <= 0 -> "sebentar"; days == 1 -> "1 hari"; days < 30 -> "$days hari"; days < 365 -> "${days / 30} bln"; else -> "${days / 365} thn" }
+    fun preview(c: Card, rating: String, today: LocalDate = LocalDate.now()) = intervalLabel(review(c, rating, today).interval)
+
     fun isDue(c: Card, today: LocalDate = LocalDate.now()) = c.due <= today.toString()
 }
 
