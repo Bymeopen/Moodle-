@@ -16,7 +16,8 @@ class LibraryTest {
         LibraryApi.http = HttpGet { u -> asked += u; when {
             u.contains("advancedsearch") -> """{"response":{"docs":[{"identifier":"buku-1","title":"Dasar Ekonomi","creator":["A","B"],"year":"1999"},{"identifier":"../bad id","title":"x"}]}}"""
             u.contains("doaj.org") -> """{"results":[{"id":"j1","bibjson":{"title":"Jurnal A","year":"2020","author":[{"name":"Siti"}],"journal":{"title":"JAM"},"link":[{"type":"fulltext","url":"https://jam.ac.id/a.pdf"}]}},
-                {"id":"j2","bibjson":{"title":"Tanpa link"}},{"id":"j3","bibjson":{"title":"Aneh","link":[{"type":"fulltext","url":"javascript:alert(1)"}]}}]}"""
+                {"id":"j2","bibjson":{"title":"Tanpa link"}},{"id":"j3","bibjson":{"title":"Aneh","link":[{"type":"fulltext","url":"javascript:alert(1)"}]}},
+                {"id":"j4","bibjson":{"title":"Lokal","link":[{"type":"fulltext","url":"http://localhost/ojs/article/view/1"}]}}]}"""
             u.contains("/metadata/") -> """{"files":[{"name":"a_text.pdf","size":"900000"},{"name":"kecil.pdf","size":"500"},{"name":"sub/x.pdf","size":"20000"},{"name":"b.epub","size":"1"}]}"""
             else -> "{}" } }
     }
@@ -41,10 +42,11 @@ class LibraryTest {
     }
 
     @Test fun publicHttpOnlyTrustedHostsAndHttps() {
-        assertTrue(PublicHttp.trustedHost("ia800.us.archive.org")); assertTrue(PublicHttp.trustedHost("doaj.org"))
-        assertFalse(PublicHttp.trustedHost("evilarchive.org")); assertFalse(PublicHttp.trustedHost("archive.org.evil.com"))
-        assertThrows(ApiError::class.java) { PublicHttp.getText("http://archive.org/x") }
-        assertThrows(ApiError::class.java) { PublicHttp.getText("https://evil.example/x") }
+        assertTrue(PublicHttp.publicHost("ia800.us.archive.org")); assertTrue(PublicHttp.publicHost("jurnal.univ.ac.id"))
+        listOf("localhost", "127.0.0.1", "10.0.0.5", "192.168.1.1", "[::1]", "intranet", "printer.local", "x.internal", "169.254.169.254").forEach { assertFalse(it, PublicHttp.publicHost(it)) }
+        assertThrows(ApiError::class.java) { PublicHttp.getText("http://archive.org/x") }             // bukan https
+        assertThrows(ApiError::class.java) { PublicHttp.getText("https://127.0.0.1/x") }
+        assertThrows(ApiError::class.java) { PublicHttp.getText("https://localhost/x") }
     }
 
     @Test fun storeRoundTripAndMissingFileDropped() {
@@ -123,7 +125,36 @@ class CampusRepoTest {
         LibraryApi.http = HttpGet { asked = it; html }
         assertEquals(2, LibraryApi.search(LibSource.CAMPUS, "manajemen keuangan", LibraryApi.campuses[0]).size)
         assertTrue(asked.startsWith("https://eprints.ums.ac.id/cgi/search/archive/simple?q=manajemen+keuangan&_action_search=Search"))
-        assertTrue(LibraryApi.campuses.all { PublicHttp.trustedHost(it.host) })
+        assertTrue(LibraryApi.campuses.all { PublicHttp.publicHost(it.host) })
         assertTrue(MANAGEMENT_TOPICS.contains("manajemen pemasaran"))
+    }
+}
+
+class PdfResolverTest {
+    @Test fun findsHighwireMetaRelativeAndHttp() {
+        val html = """<head><meta name="citation_pdf_url" content="https://jurnal.kampus.ac.id/index.php/jm/article/download/12/34"></head>"""
+        assertEquals("https://jurnal.kampus.ac.id/index.php/jm/article/download/12/34", PdfResolver.find(html, "https://jurnal.kampus.ac.id/index.php/jm/article/view/12"))
+        val rel = """<meta content="/files/a.pdf?x=1&amp;y=2" name="citation_pdf_url">"""
+        assertEquals("https://situs.id/files/a.pdf?x=1&y=2", PdfResolver.find(rel, "https://situs.id/a/1"))
+        assertEquals("https://situs.id/x.pdf", PdfResolver.find("""<meta name="citation_pdf_url" content="http://situs.id/x.pdf">""", "https://situs.id/a"))
+    }
+
+    @Test fun findsEprintsDocumentAndAnchorAndRejectsInternal() {
+        assertEquals("https://eprints.ums.ac.id/60/1/skripsi.pdf", PdfResolver.find("""<meta name="eprints.document_url" content="https://eprints.ums.ac.id/60/1/skripsi.pdf" />""", "https://eprints.ums.ac.id/60/"))
+        assertEquals("https://a.id/doc/b.pdf", PdfResolver.find("""<a class="x" href="/doc/b.pdf">PDF</a>""", "https://a.id/p/1"))
+        assertNull(PdfResolver.find("""<meta name="citation_pdf_url" content="https://127.0.0.1/x.pdf">""", "https://a.id/"))
+        assertNull(PdfResolver.find("<html>tidak ada</html>", "https://a.id/"))
+    }
+
+    @Test fun directPdfSkipsFetch() {
+        var fetched = false
+        assertEquals("https://a.id/b.pdf", PdfResolver.resolve("https://a.id/b.pdf") { fetched = true; "" })
+        assertFalse(fetched)
+        assertEquals("https://a.id/z.pdf", PdfResolver.resolve("https://a.id/view/1") { """<meta name="citation_pdf_url" content="https://a.id/z.pdf">""" })
+    }
+
+    @Test fun inAppViewerSupportMatrix() {
+        assertTrue(canViewInApp("a.pdf", null)); assertTrue(canViewInApp("a.DOCX", null)); assertTrue(canViewInApp("a.png", "image/png"))
+        assertTrue(canViewInApp("s.pptx", null)); assertFalse(canViewInApp("old.doc", null)); assertFalse(canViewInApp("a.xlsx", null)); assertFalse(canViewInApp("a.zip", null))
     }
 }

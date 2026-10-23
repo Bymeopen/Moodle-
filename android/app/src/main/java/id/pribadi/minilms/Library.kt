@@ -9,13 +9,16 @@ import java.net.URLEncoder
 
 /** Sumber perpustakaan gratis tanpa kunci API. */
 enum class LibSource(val label: String, val hint: String) {
-    BOOKS("Buku", "Internet Archive: buku domain publik & terbuka (PDF bisa diunduh)"),
-    JOURNALS("Jurnal", "DOAJ: artikel jurnal akses terbuka (dibuka di browser)"),
+    BOOKS("Buku", "Internet Archive: buku domain publik & terbuka, hampir semuanya berbahasa Inggris (PDF bisa diunduh)"),
+    JOURNALS("Jurnal", "DOAJ: artikel jurnal akses terbuka, banyak berbahasa Indonesia. Ketuk unduh untuk PDF offline."),
     CAMPUS("Repositori PTM", "Skripsi, tesis, dan artikel dosen dari repositori perguruan tinggi Muhammadiyah. Sebagian hanya menampilkan abstrak/bab awal."),
 }
 
 /** Repositori EPrints perguruan tinggi Muhammadiyah. [verified] = sudah dicoba berhasil diakses dari aplikasi; lainnya mungkin menolak akses non-browser. */
 data class Campus(val name: String, val host: String, val verified: Boolean = false)
+
+/** Topik pencarian buku (koleksi Internet Archive hampir semuanya berbahasa Inggris). */
+val ENGLISH_TOPICS = listOf("management", "marketing", "accounting", "economics", "entrepreneurship", "finance", "organizational behavior")
 
 /** Topik jurusan manajemen untuk pencarian cepat. */
 val MANAGEMENT_TOPICS = listOf("manajemen", "manajemen keuangan", "manajemen pemasaran", "manajemen sumber daya manusia", "kewirausahaan", "akuntansi", "perilaku organisasi", "bisnis")
@@ -80,7 +83,7 @@ object LibraryApi {
         return rs.objects().mapNotNull { r ->
             val b = r.optJSONObject("bibjson") ?: return@mapNotNull null
             val link = b.optJSONArray("link")?.objects()?.firstOrNull { it.optString("type") == "fulltext" }?.optString("url")
-                ?.takeIf { it.startsWith("https://") || it.startsWith("http://") } ?: return@mapNotNull null
+                ?.takeIf { (it.startsWith("https://") || it.startsWith("http://")) && PublicHttp.publicHost(WebPolicy.hostOf(it) ?: "") } ?: return@mapNotNull null
             val authors = b.optJSONArray("author")?.objects()?.map { it.optString("name") }?.filter { it.isNotBlank() }?.joinToString(", ").orEmpty()
             LibItem(LibSource.JOURNALS, r.optString("id"), b.optString("title"), authors, b.optString("year"), b.optJSONObject("journal")?.optString("title").orEmpty(), link)
         }.toList()
@@ -105,14 +108,19 @@ object LibraryApi {
 
 /** HTTP GET publik: hanya https, alihan diikuti manual maksimal 4 kali dan hanya ke host tepercaya. */
 object PublicHttp {
-    private val trusted = listOf("archive.org", "doaj.org") + LibraryApi.campuses.map { it.host }
-    fun trustedHost(host: String) = trusted.any { host == it || host.endsWith(".$it") }
+    /** Boleh host publik apa pun (jurnal/repositori tersebar di banyak domain), tetapi bukan IP, localhost, atau jaringan internal. Tanpa token Moodle. */
+    fun publicHost(host: String): Boolean {
+        val h = host.lowercase().trimEnd('.')
+        if (!h.contains('.') || h == "localhost" || h.endsWith(".local") || h.endsWith(".internal") || h.endsWith(".localhost")) return false
+        if (Regex("[0-9.]+").matches(h) || h.contains(':') || h.startsWith("[")) return false                    // IPv4/IPv6 literal
+        return true
+    }
 
     private fun open(start: String): HttpURLConnection {
         var url = start
         repeat(5) {
             val u = URL(url)
-            if (u.protocol != "https" || !trustedHost(u.host)) throw ApiError("Host tidak diizinkan: ${u.host}")
+            if (u.protocol != "https" || !publicHost(u.host)) throw ApiError("Alamat tidak diizinkan: ${u.host}")
             val c = u.openConnection() as HttpURLConnection
             c.instanceFollowRedirects = false; c.connectTimeout = 20_000; c.readTimeout = 60_000
             c.setRequestProperty("User-Agent", "MiniLMS/2.4"); c.setRequestProperty("Accept", "application/json,*/*")
@@ -124,7 +132,8 @@ object PublicHttp {
         throw ApiError("Terlalu banyak alihan")
     }
 
-    fun getText(url: String): String { val c = open(url); try { return c.inputStream.bufferedReader().use { it.readText() } } finally { c.disconnect() } }
+    /** Baca teks (HTML/JSON) maksimal [maxChars] karakter. */
+    fun getText(url: String, maxChars: Int = 3_000_000): String { val c = open(url); try { return c.inputStream.bufferedReader().use { r -> val b = CharArray(maxChars + 1); var n = 0; while (n < b.size) { val k = r.read(b, n, b.size - n); if (k < 0) break; n += k }; String(b, 0, minOf(n, maxChars)) } } finally { c.disconnect() } }
 
     /** Unduh ke [dest] lewat file .part; berhenti dan hapus bila [shouldStop]. */
     fun download(url: String, dest: File, maxBytes: Long, shouldStop: () -> Boolean, onBytes: (Long) -> Unit) {
@@ -145,6 +154,33 @@ object PublicHttp {
             if (!part.renameTo(dest)) throw ApiError("Gagal menyimpan file")
         } finally { c.disconnect(); if (part.exists()) part.delete() }
     }
+}
+
+/** Mencari alamat PDF dari halaman artikel/skripsi: meta Highwire (OJS, banyak jurnal), meta EPrints, atau tautan .pdf. */
+object PdfResolver {
+    private val metaRes = listOf(
+        Regex("""<meta[^>]+name=["']citation_pdf_url["'][^>]+content=["']([^"']+)["']""", RegexOption.IGNORE_CASE),
+        Regex("""<meta[^>]+content=["']([^"']+)["'][^>]+name=["']citation_pdf_url["']""", RegexOption.IGNORE_CASE),
+        Regex("""<meta[^>]+name=["']eprints\.document_url["'][^>]+content=["']([^"']+\.pdf)["']""", RegexOption.IGNORE_CASE),
+        Regex("""<a[^>]+href=["']([^"']+\.pdf)["']""", RegexOption.IGNORE_CASE),
+    )
+
+    fun isDirectPdf(url: String) = try { java.net.URI(url).path.lowercase().endsWith(".pdf") } catch (e: Exception) { false }
+
+    /** Alamat PDF (mutlak, https) dari [html] halaman [pageUrl]; null bila tidak ketemu. */
+    fun find(html: String, pageUrl: String): String? {
+        for (re in metaRes) {
+            val raw = re.find(html)?.groupValues?.get(1)?.replace("&amp;", "&") ?: continue
+            val abs = try { java.net.URI(pageUrl).resolve(raw).toString() } catch (e: Exception) { continue }
+            val u = if (abs.startsWith("http://")) "https://" + abs.removePrefix("http://") else abs
+            if (u.startsWith("https://") && PublicHttp.publicHost(WebPolicy.hostOf(u) ?: "")) return u
+        }
+        return null
+    }
+
+    /** PDF untuk halaman [pageUrl]: tautan langsung, atau cari di isi halamannya. */
+    fun resolve(pageUrl: String, fetch: (String) -> String = { PublicHttp.getText(it) }): String? =
+        if (isDirectPdf(pageUrl)) pageUrl else find(fetch(pageUrl), pageUrl)
 }
 
 /** Indeks buku perpustakaan yang tersimpan di filesDir/library (publik, tidak dihapus saat logout). */

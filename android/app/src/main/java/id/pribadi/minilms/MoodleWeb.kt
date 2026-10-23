@@ -37,7 +37,7 @@ object WebPolicy {
  */
 @SuppressLint("SetJavaScriptEnabled")
 @Composable
-fun MoodleWebScreen(url: String, onClose: () -> Unit, onExternal: (String) -> Unit) {
+fun MoodleWebScreen(url: String, onClose: () -> Unit, onExternal: (String) -> Unit, onSessionExpired: () -> Unit = {}) {
     val startHost = remember(url) { WebPolicy.hostOf(url) }
     var title by remember { mutableStateOf("") }
     var progress by remember { mutableIntStateOf(0) }
@@ -46,7 +46,8 @@ fun MoodleWebScreen(url: String, onClose: () -> Unit, onExternal: (String) -> Un
     var customCb by remember { mutableStateOf<WebChromeClient.CustomViewCallback?>(null) }
     val back = { if (customView != null) { customCb?.onCustomViewHidden() } else if (web?.canGoBack() == true) web?.goBack() else onClose() }
     BackHandler { back() }
-    DisposableEffect(Unit) { onDispose { CookieManager.getInstance().removeAllCookies(null); web?.destroy() } }
+    var expired by remember { mutableStateOf(false) }
+    DisposableEffect(Unit) { onDispose { CookieManager.getInstance().flush(); web?.destroy() } }       // cookie sesi dipertahankan; dihapus saat logout
 
     Column(Modifier.fillMaxSize()) {
         Row(Modifier.fillMaxWidth().padding(horizontal = 4.dp), verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
@@ -55,6 +56,7 @@ fun MoodleWebScreen(url: String, onClose: () -> Unit, onExternal: (String) -> Un
             IconButton({ web?.reload() }) { Icon(Icons.Rounded.Refresh, "Muat ulang") }
             IconButton({ onExternal(web?.url ?: url) }) { Icon(Icons.Rounded.OpenInNew, "Buka di browser") }
         }
+        if (expired) InfoBanner("Sesi Moodle berakhir.", Modifier.padding(horizontal = 12.dp), tone = Tone.WARN, icon = Icons.Rounded.Lock, action = "Masuk otomatis", onAction = onSessionExpired)
         if (progress in 1..99) ProgressBar(progress / 100f, Modifier.fillMaxWidth().height(3.dp))
         Box(Modifier.weight(1f).fillMaxWidth()) {
             AndroidView(
@@ -64,6 +66,8 @@ fun MoodleWebScreen(url: String, onClose: () -> Unit, onExternal: (String) -> Un
                         settings.domStorageEnabled = true
                         settings.allowFileAccess = false; settings.allowContentAccess = false
                         settings.mediaPlaybackRequiresUserGesture = true
+                        settings.useWideViewPort = true; settings.loadWithOverviewMode = true         // halaman desktop muat di lebar layar
+                        settings.setSupportZoom(true); settings.builtInZoomControls = true; settings.displayZoomControls = false
                         settings.mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
                         webViewClient = object : WebViewClient() {
                             override fun shouldOverrideUrlLoading(v: WebView, r: WebResourceRequest): Boolean {
@@ -72,6 +76,7 @@ fun MoodleWebScreen(url: String, onClose: () -> Unit, onExternal: (String) -> Un
                                 onExternal(t); return true
                             }
                             override fun onPageStarted(v: WebView, u: String, f: Bitmap?) { progress = 1 }
+                            override fun onPageFinished(v: WebView, u: String) { expired = u.contains("/login/index.php") && startHost != null && WebPolicy.hostOf(u) == startHost }
                         }
                         webChromeClient = object : WebChromeClient() {
                             override fun onProgressChanged(v: WebView, p: Int) { progress = p }

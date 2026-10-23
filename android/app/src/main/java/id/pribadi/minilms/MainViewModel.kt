@@ -26,6 +26,7 @@ data class DlState(val running: Boolean = false, val done: Int = 0, val total: I
                    val failed: Int = 0, val error: String = "", val waiting: Boolean = false)
 
 class MainViewModel(app: Application) : AndroidViewModel(app) {
+    private companion object { const val SESSION_FRESH_MS = 90L * 60 * 1000 }
     val repo = Repo.get(app)
     val site = repo.site
     val snapshot = repo.snapshot
@@ -172,7 +173,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    fun logout() { Jobs.pause(getApplication()); Jobs.scheduleReminders(getApplication(), false); repo.logout() }
+    fun logout() { android.webkit.CookieManager.getInstance().removeAllCookies(null); autologinAt = 0; Jobs.pause(getApplication()); Jobs.scheduleReminders(getApplication(), false); repo.logout() }
     fun setReminders(on: Boolean) { repo.reminders = on; Jobs.scheduleReminders(getApplication(), on) }
     fun setWifiOnly(on: Boolean) { repo.wifiOnly = on }
     fun setTheme(m: ThemeMode) = repo.setTheme(m)
@@ -187,16 +188,34 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun toggleDone(id: Long) = repo.setAssignmentDone(id, id !in repo.doneAssignments.value)
 
     // ---------- file & tautan ----------
-    /** Buka file unduhan dengan aplikasi lain (PDF viewer, dll.) lewat FileProvider. */
+    /** Buka file unduhan Moodle di dalam aplikasi (PDF/Word/gambar/video); jenis lain lewat aplikasi lain. */
     fun open(c: Course, i: Item, f: FileRef) {
-        val ctx = getApplication<Application>()
         if (!repo.isDownloaded(c.id, i.id, f)) { _message.value = "File belum diunduh"; return }
-        val file = repo.fileOf(c.id, i.id, f)
-        if (FileKind.of(f.name, f.mime) == FileKind.VIDEO) { _playing.value = file; return }   // putar di dalam aplikasi
+        view(repo.fileOf(c.id, i.id, f), f.name, f.mime)
+    }
+
+    /** Dokumen yang sedang dibaca di dalam aplikasi; null = tidak ada. */
+    private val _viewing = MutableStateFlow<ViewDoc?>(null)
+    val viewing: StateFlow<ViewDoc?> = _viewing
+    fun closeViewer() { _viewing.value = null }
+    fun openViewingExternal() { _viewing.value?.let { openExternal(it.file, null) } }
+
+    fun view(file: java.io.File, title: String, mime: String?) {
+        val kind = FileKind.of(title, mime)
+        when {
+            kind == FileKind.VIDEO -> _playing.value = file                                  // putar di dalam aplikasi
+            canViewInApp(title, mime) -> _viewing.value = ViewDoc(file, title, kind)
+            else -> openExternal(file, mime)
+        }
+    }
+
+    /** Buka file dengan aplikasi lain lewat FileProvider (jalan terakhir untuk jenis file yang tak didukung pembaca dalam aplikasi). */
+    fun openExternal(file: java.io.File, mime: String?) {
+        val ctx = getApplication<Application>()
         val uri = try { FileProvider.getUriForFile(ctx, "${ctx.packageName}.files", file) } catch (e: IllegalArgumentException) { _message.value = "File tidak bisa dibuka"; return }
-        val mime = f.mime ?: MimeTypeMap.getSingleton().getMimeTypeFromExtension(file.extension.lowercase()) ?: "*/*"
+        val type = mime ?: MimeTypeMap.getSingleton().getMimeTypeFromExtension(file.extension.lowercase()) ?: "*/*"
         try {
-            ctx.startActivity(Intent(Intent.ACTION_VIEW).setDataAndType(uri, mime).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK))
+            ctx.startActivity(Intent(Intent.ACTION_VIEW).setDataAndType(uri, type).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK))
         } catch (e: ActivityNotFoundException) { _message.value = "Tidak ada aplikasi untuk membuka file ini" }
     }
 
@@ -271,7 +290,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     // ---------- perpustakaan online gratis ----------
     data class LibState(
-        val source: LibSource = LibSource.BOOKS, val campus: Campus = LibraryApi.campuses[0], val query: String = "", val results: List<LibItem> = emptyList(), val searching: Boolean = false,
+        val source: LibSource = LibSource.JOURNALS, val campus: Campus = LibraryApi.campuses[0], val query: String = "", val results: List<LibItem> = emptyList(), val searching: Boolean = false,
         val searched: Boolean = false, val error: String? = null, val saved: List<LibSaved> = emptyList(),
         val downloading: Map<String, Float> = emptyMap(),      // id -> 0..1 (-1 = belum diketahui)
     )
@@ -281,8 +300,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private var libJob: kotlinx.coroutines.Job? = null
 
     fun libraryLoad() { viewModelScope.launch { val l = withContext(Dispatchers.IO) { libStore.list() }; _lib.update { it.copy(saved = l) } } }
-    fun libraryCampus(c: Campus) { _lib.update { it.copy(campus = c, results = emptyList(), searched = false, error = null) } }
-    fun librarySource(s: LibSource) { _lib.update { it.copy(source = s, results = emptyList(), searched = false, error = null) } }
+    fun libraryCampus(c: Campus) { _lib.update { it.copy(campus = c, results = emptyList(), searched = false, error = null) }; librarySearch(_lib.value.query.ifBlank { "manajemen" }) }
+    fun librarySource(s: LibSource) { _lib.update { it.copy(source = s, results = emptyList(), searched = false, error = null) }; librarySearch(_lib.value.query.ifBlank { defaultQuery(s) }) }
+    private fun defaultQuery(s: LibSource) = if (s == LibSource.BOOKS) "management" else "manajemen"
+    /** Dipanggil saat layar dibuka: langsung isi dengan topik manajemen agar tidak kosong. */
+    fun libraryStart() { val st = _lib.value; if (!st.searched && !st.searching && st.results.isEmpty()) librarySearch(st.query.ifBlank { defaultQuery(st.source) }) }
 
     fun librarySearch(q: String) {
         libJob?.cancel()
@@ -296,21 +318,27 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    /** Unduh PDF buku Internet Archive ke penyimpanan lokal. */
+    /** Unduh PDF ke penyimpanan lokal: buku Internet Archive, atau PDF jurnal/skripsi yang dicari dari halamannya. */
     fun libraryDownload(item: LibItem) {
-        if (item.source != LibSource.BOOKS || item.id in _lib.value.downloading) return
+        if (item.id in _lib.value.downloading) return
         _lib.update { it.copy(downloading = it.downloading + (item.id to -1f)) }
         viewModelScope.launch {
+            var openInstead: String? = null
             try {
                 withContext(Dispatchers.IO) {
-                    val (name, size) = LibraryApi.pdfFor(item.id) ?: throw ApiError("Buku ini tidak punya PDF yang bisa diunduh; buka di browser")
+                    val (url, size) = if (item.source == LibSource.BOOKS) {
+                        val (name, sz) = LibraryApi.pdfFor(item.id) ?: throw ApiError("Buku ini tidak punya PDF yang bisa diunduh")
+                        LibraryApi.downloadUrl(item.id, name) to sz
+                    } else (PdfResolver.resolve(item.url) ?: run { openInstead = item.url; throw ApiError("PDF tidak tersedia untuk diunduh (mungkin dikunci); dibuka sebagai halaman") }) to 0L
                     val dest = java.io.File(java.io.File(getApplication<Application>().filesDir, "library"), safeName("${item.id}.pdf"))
-                    PublicHttp.download(LibraryApi.downloadUrl(item.id, name), dest, 500L * 1024 * 1024, { false }) { b -> if (size > 0) _lib.update { it.copy(downloading = it.downloading + (item.id to (b.toFloat() / size).coerceIn(0f, 1f))) } }
+                    PublicHttp.download(url, dest, 300L * 1024 * 1024, { false }) { b -> if (size > 0) _lib.update { it.copy(downloading = it.downloading + (item.id to (b.toFloat() / size).coerceIn(0f, 1f))) } }
+                    val head = dest.inputStream().use { i -> ByteArray(5).also { i.read(it) } }
+                    if (String(head) != "%PDF-") { dest.delete(); throw ApiError("File yang diunduh bukan PDF (penyedia membatasi akses)") }
                     libStore.add(LibSaved(item.id, item.title, item.author, dest.name, dest.length()))
                 }
                 _message.value = "Tersimpan: ${item.title}"
             } catch (e: kotlinx.coroutines.CancellationException) { throw e }
-            catch (e: Exception) { _message.value = "Gagal mengunduh: ${e.message}" }
+            catch (e: Exception) { _message.value = e.message ?: "Gagal mengunduh"; openInstead?.let { openInApp(it) } }
             _lib.update { it.copy(downloading = it.downloading - item.id) }
             libraryLoad()
         }
@@ -318,12 +346,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     fun libraryDelete(s: LibSaved) { viewModelScope.launch { withContext(Dispatchers.IO) { libStore.remove(s.id) }; libraryLoad() } }
 
-    fun libraryOpen(s: LibSaved) {
-        val ctx = getApplication<Application>()
-        val uri = try { FileProvider.getUriForFile(ctx, "${ctx.packageName}.files", libStore.fileOf(s)) } catch (e: IllegalArgumentException) { _message.value = "File tidak bisa dibuka"; return }
-        try { ctx.startActivity(Intent(Intent.ACTION_VIEW).setDataAndType(uri, "application/pdf").addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)) }
-        catch (e: ActivityNotFoundException) { _message.value = "Tidak ada aplikasi pembuka PDF" }
-    }
+    fun libraryOpen(s: LibSaved) = view(libStore.fileOf(s), s.title.take(80) + ".pdf", "application/pdf")
 
     /** Video yang sedang diputar di dalam aplikasi (file unduhan lokal); null = tidak ada. */
     private val _playing = MutableStateFlow<java.io.File?>(null)
@@ -337,14 +360,42 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     /** Buka tautan (YouTube, rekaman, dll.) di dalam aplikasi; hanya http(s). */
     fun openInApp(url: String) { if (WebPolicy.hostOf(url) == null) { _message.value = "Tautan tidak didukung"; return }; _web.value = url }
 
-    /** Buka halaman Moodle (tes, tugas, forum, dll.) sudah login lewat kunci autologin; bila tak bisa, buka URL biasa. */
+    // ---------- sesi Moodle di WebView ----------
+    private val _needReauth = MutableStateFlow(false)
+    val needReauth: StateFlow<Boolean> = _needReauth
+    fun dismissReauth() { _needReauth.value = false }
+    private var autologinAt = 0L            // kapan login otomatis terakhir berhasil; cookie sesi WebView masih berlaku beberapa jam
+    private var lastMoodleUrl = ""
+
+    /**
+     * Buka halaman Moodle (tes, tugas, forum, dll.) di dalam aplikasi. Kunci autologin dibatasi Moodle (sekali tiap beberapa menit),
+     * jadi selama cookie sesi masih segar halaman dibuka langsung; bila belum ada private token (login lama), pengguna diminta masuk ulang sekali.
+     */
     fun openMoodle(url: String) {
         val site = repo.site.value
-        if (site == null) { openLink(url); return }
+        if (site == null) { openInApp(url); return }
+        if (site.privateToken.isEmpty()) { _needReauth.value = true; return }
+        lastMoodleUrl = url
         viewModelScope.launch {
-            val target = withContext(Dispatchers.IO) { MoodleApi.autologinUrl(site, url) } ?: url
-            if (target == url) _message.value = "Membuka tanpa login otomatis; masuk ulang bila diminta"
-            _web.value = target
+            val fresh = System.currentTimeMillis() - autologinAt < SESSION_FRESH_MS
+            val auto = if (fresh) null else withContext(Dispatchers.IO) { MoodleApi.autologinUrl(site, url) }
+            if (auto != null) autologinAt = System.currentTimeMillis()
+            else if (!fresh) _message.value = "Login otomatis belum berhasil; tunggu beberapa menit lalu coba lagi"
+            _web.value = auto ?: url
+        }
+    }
+
+    /** Dipanggil WebView saat sesi Moodle berakhir (halaman login muncul): paksa minta kunci autologin baru. */
+    fun retryAutologin() { autologinAt = 0; if (lastMoodleUrl.isNotEmpty()) { _web.value = null; openMoodle(lastMoodleUrl) } }
+
+    /** Masuk ulang lewat SSO (tanpa logout) agar aplikasi mendapat private token untuk login otomatis. */
+    fun reauthorize() {
+        _needReauth.value = false
+        val site = repo.site.value ?: return
+        launchBusy {
+            val cfg = MoodleApi.publicConfig(site.url)
+            val u = startSso(site.url, cfg, cfg.providers.firstOrNull()) ?: return@launchBusy
+            getApplication<Application>().startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(u)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
         }
     }
 

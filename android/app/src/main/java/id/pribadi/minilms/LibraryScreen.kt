@@ -22,7 +22,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 @Composable
 fun LibraryScreen(vm: MainViewModel, onBack: () -> Unit) {
     val st by vm.library.collectAsStateWithLifecycle()
-    LaunchedEffect(Unit) { vm.libraryLoad() }
+    LaunchedEffect(Unit) { vm.libraryLoad(); vm.libraryStart() }
     Column(Modifier.fillMaxSize()) {
         BackBar("Perpustakaan", onBack)
         LibraryContent(st, vm::librarySource, vm::librarySearch, vm::libraryDownload, vm::openInApp, vm::libraryOpen, vm::libraryDelete, vm::libraryCampus)
@@ -51,16 +51,16 @@ fun LibraryContent(
             item {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        LibSource.values().forEach { s -> FilterChip(st.source == s, { onSource(s) }, { Text(s.label) }) }
+                        listOf(LibSource.JOURNALS, LibSource.CAMPUS, LibSource.BOOKS).forEach { s -> FilterChip(st.source == s, { onSource(s) }, { Text(s.label) }) }
                     }
                     if (st.source == LibSource.CAMPUS) {
                         Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             LibraryApi.campuses.forEach { c -> FilterChip(st.campus == c, { onCampus(c) }, { Text(c.name) }) }
                         }
                         if (!st.campus.verified) Text("Situs ini belum teruji dari aplikasi; bila gagal, buka lewat browser.", style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant)
-                        Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            MANAGEMENT_TOPICS.forEach { t -> SuggestionChip({ q = t; onSearch(t) }, { Text(t) }) }
-                        }
+                    }
+                    Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        (if (st.source == LibSource.BOOKS) ENGLISH_TOPICS else MANAGEMENT_TOPICS).forEach { t -> SuggestionChip({ q = t; onSearch(t) }, { Text(t) }) }
                     }
                     Text(st.source.hint, style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant)
                     OutlinedTextField(q, { q = it }, Modifier.fillMaxWidth(), singleLine = true, placeholder = { Text("Cari judul, penulis, atau topik") },
@@ -84,11 +84,10 @@ fun LibraryContent(
                             if (meta.isNotEmpty()) Text(meta, style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant, maxLines = 2, overflow = TextOverflow.Ellipsis)
                         }
                         when {
-                            r.source != LibSource.BOOKS -> IconButton({ onOpenUrl(r.url) }) { Icon(Icons.Rounded.OpenInNew, "Buka di aplikasi", tint = cs.primary) }
                             saved -> Icon(Icons.Rounded.CloudDone, "Sudah diunduh", tint = cs.secondary)
                             prog != null -> if (prog >= 0f) ProgressRing(prog, 36.dp, 4.dp, cs.secondary) else CircularProgressIndicator(Modifier.size(28.dp), strokeWidth = 3.dp)
                             else -> Row {
-                                IconButton({ onOpenUrl(r.url) }) { Icon(Icons.Rounded.OpenInNew, "Buka di browser") }
+                                IconButton({ onOpenUrl(r.url) }) { Icon(Icons.Rounded.OpenInNew, "Baca halaman di aplikasi") }
                                 FilledTonalIconButton({ onDownload(r) }, Modifier.size(40.dp)) { Icon(Icons.Rounded.FileDownload, "Unduh PDF") }
                             }
                         }

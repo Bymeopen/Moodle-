@@ -18,8 +18,8 @@ android {
         applicationId = "id.pribadi.minilms"
         minSdk = 26
         targetSdk = 34
-        versionCode = 6
-        versionName = "2.6"
+        versionCode = 7
+        versionName = "2.7"
     }
     signingConfigs {
         if (keystoreProps.isNotEmpty()) create("release") {

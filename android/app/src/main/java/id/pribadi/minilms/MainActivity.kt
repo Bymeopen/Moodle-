@@ -100,6 +100,8 @@ fun MainScreen(vm: MainViewModel) {
     val tick by vm.tick.collectAsStateWithLifecycle()
     val playing by vm.playing.collectAsStateWithLifecycle()
     val web by vm.web.collectAsStateWithLifecycle()
+    val viewing by vm.viewing.collectAsStateWithLifecycle()
+    val needReauth by vm.needReauth.collectAsStateWithLifecycle()
     val done by vm.doneAssignments.collectAsStateWithLifecycle()
     val cards by vm.cards.collectAsStateWithLifecycle()
     val hasKey by vm.ai.hasKey.collectAsStateWithLifecycle()
@@ -116,7 +118,11 @@ fun MainScreen(vm: MainViewModel) {
     LaunchedEffect(Unit) { if (Build.VERSION.SDK_INT >= 33 && !Notif.canPost(vm.getApplication()) && !vm.repo.askedNotif) { vm.repo.askedNotif = true; perm.launch(Manifest.permission.POST_NOTIFICATIONS) } }
 
     playing?.let { VideoPlayerDialog(it, vm::stopPlaying) }
-    web?.let { u -> androidx.compose.ui.window.Dialog(vm::closeWeb, androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)) { Surface(Modifier.fillMaxSize()) { Column(Modifier.statusBarsPadding()) { MoodleWebScreen(u, vm::closeWeb, vm::openLink) } } } }
+    viewing?.let { DocViewerDialog(it, vm::closeViewer, vm::openViewingExternal) }
+    if (needReauth) AlertDialog(vm::dismissReauth, title = { Text("Aktifkan login otomatis") },
+        text = { Text("Agar tes, forum, dan video terbuka langsung di aplikasi tanpa meminta login lagi, masuk sekali lagi lewat Google kampus. Data dan unduhan Anda tidak hilang.") },
+        confirmButton = { TextButton(vm::reauthorize) { Text("Masuk sekarang") } }, dismissButton = { TextButton(vm::dismissReauth) { Text("Nanti") } })
+    web?.let { u -> androidx.compose.ui.window.Dialog(vm::closeWeb, androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)) { Surface(Modifier.fillMaxSize()) { Column(Modifier.statusBarsPadding()) { MoodleWebScreen(u, vm::closeWeb, vm::openLink, vm::retryAutologin) } } } }
     BackHandler(enabled = overlay.isNotEmpty() || tab != 0) { if (overlay.isNotEmpty()) overlay = "" else tab = 0 }
 
     val course = if (overlay.startsWith("course:")) courses.firstOrNull { it.id == overlay.removePrefix("course:").toLongOrNull() } else null
