@@ -3,6 +3,7 @@ const $app = document.getElementById('app');
 const $nav = document.getElementById('nav');
 let token = localStorage.getItem('token');
 let me = null;
+let aiEnabled = false;
 
 // ---------- util ----------
 function h(tag, attrs = {}, ...kids) {
@@ -11,7 +12,7 @@ function h(tag, attrs = {}, ...kids) {
     if (k.startsWith('on')) el.addEventListener(k.slice(2), v);
     else if (v !== false && v != null) el[k in el ? k : 'className'] = v;
   }
-  for (const kid of kids.flat()) if (kid != null) el.append(kid);
+  for (const kid of kids.flat()) if (kid != null && kid !== false) el.append(kid);
   return el;
 }
 async function api(method, path, body) {
@@ -38,7 +39,7 @@ const form = (fields, submitLabel, onSubmit) => {
   }, fields.map(([, label], i) => h('label', {}, label, inputs[i][1])), err, h('button', {}, submitLabel));
   return el;
 };
-const show = (...nodes) => $app.replaceChildren(...nodes.flat());
+const show = (...nodes) => $app.replaceChildren(...nodes.flat().filter((n) => n != null && n !== false));
 
 // ---------- nav & auth ----------
 function renderNav() {
@@ -87,7 +88,9 @@ async function courseView(id) {
       h('div', { className: 'row' }, h('a', { href: `#/grades/${id}` }, 'Buku nilai'),
         m && h('button', { className: 'danger', onclick: async () => { if (confirm('Hapus kursus?')) { await api('DELETE', `/courses/${id}`); location.hash = '#/'; } } }, 'Hapus'))),
     h('p', {}, course.description),
+    aiEnabled && tutorPanel(id),
     course.items.map((it) => itemCard(it, m)),
+    m && aiEnabled && aiQuizPanel(id),
     m && addItemForm(id));
 }
 
@@ -121,6 +124,35 @@ function itemCard(it, manage) {
     body);
 }
 
+function tutorPanel(courseId) {
+  const q = h('input', { placeholder: 'Tanya tutor AI tentang materi kursus ini…' });
+  const out = h('p', { style: 'white-space:pre-wrap' });
+  const btn = h('button', { onclick: async () => {
+    out.textContent = 'Memproses…'; btn.disabled = true;
+    try { out.textContent = (await api('POST', `/courses/${courseId}/ai/ask`, { question: q.value })).answer; }
+    catch (e) { out.textContent = e.message; }
+    btn.disabled = false;
+  } }, 'Tanya');
+  return h('div', { className: 'card' }, h('strong', {}, 'Tutor AI'), q, btn, out);
+}
+
+function aiQuizPanel(courseId) {
+  const count = h('input', { type: 'number', value: 5, min: 1, max: 20 });
+  const title = h('input', { placeholder: 'Judul kuis' , value: 'Kuis (AI)' });
+  const out = h('div');
+  const btn = h('button', { onclick: async () => {
+    out.replaceChildren(h('span', { className: 'muted' }, 'Membuat soal…')); btn.disabled = true;
+    try {
+      const { questions } = await api('POST', `/courses/${courseId}/ai/quiz`, { count: Number(count.value) });
+      out.replaceChildren(h('ol', {}, questions.map((q) => h('li', {}, `${q.text} — kunci: ${q.options[q.correct]}`))),
+        h('button', { onclick: async () => { await api('POST', `/courses/${courseId}/items`, { type: 'quiz', title: title.value, max_grade: 100, questions }); route(); } }, 'Simpan sebagai kuis'),
+        h('span', { className: 'muted' }, ' Tinjau dulu; soal tidak otomatis tersimpan.'));
+    } catch (e) { out.replaceChildren(h('div', { className: 'error' }, e.message)); }
+    btn.disabled = false;
+  } }, 'Buat draf soal');
+  return h('div', { className: 'card' }, h('strong', {}, 'Buat kuis dari materi dengan AI'), h('label', {}, 'Jumlah soal', count), title, btn, out);
+}
+
 function addItemForm(courseId) {
   const err = h('div', { className: 'error' });
   const type = h('select', {}, ['page', 'link', 'assignment', 'quiz'].map((t) => h('option', { value: t }, t)));
@@ -151,7 +183,12 @@ async function submissionsView(itemId) {
       const grade = h('input', { type: 'number', value: s.grade ?? '', placeholder: 'Nilai' });
       const fb = h('input', { value: s.feedback ?? '', placeholder: 'Umpan balik' });
       const msg = h('span', { className: 'muted' });
-      return h('div', { className: 'card' }, h('strong', {}, s.student), h('p', { style: 'white-space:pre-wrap' }, s.text), grade, fb,
+      const suggest = aiEnabled && h('button', { className: 'ghost', onclick: async () => {
+        msg.textContent = 'AI menilai…';
+        try { const r = await api('POST', `/submissions/${s.id}/ai/suggest`); grade.value = r.grade; fb.value = r.feedback; msg.textContent = 'Saran AI terisi; periksa lalu simpan'; }
+        catch (e) { msg.textContent = e.message; }
+      } }, 'Saran nilai AI');
+      return h('div', { className: 'card' }, h('strong', {}, s.student), h('p', { style: 'white-space:pre-wrap' }, s.text), grade, fb, suggest, ' ',
         h('button', { onclick: async () => { try { await api('POST', `/submissions/${s.id}/grade`, { grade: Number(grade.value), feedback: fb.value }); msg.textContent = 'Tersimpan'; } catch (e) { msg.textContent = e.message; } } }, 'Simpan'), ' ', msg);
     }) : h('p', { className: 'muted' }, 'Belum ada pengumpulan.'));
 }
@@ -175,7 +212,7 @@ async function usersView() {
 // ---------- router ----------
 async function route() {
   if (!token) { me = null; renderNav(); return authView(); }
-  try { me = await api('GET', '/me'); } catch { localStorage.removeItem('token'); token = me = null; renderNav(); return authView(); }
+  try { me = await api('GET', '/me'); aiEnabled = (await api('GET', '/ai/status')).enabled; } catch { localStorage.removeItem('token'); token = me = null; renderNav(); return authView(); }
   renderNav();
   const [, page, arg] = location.hash.split('/');
   try {
