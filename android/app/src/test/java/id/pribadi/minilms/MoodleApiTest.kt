@@ -52,7 +52,32 @@ class MoodleApiTest {
         assertThrows(ApiError::class.java) { Sso.parseCallback("moodlemobile://token=%%%", base, "1") }
     }
 
-    @Test fun ssoLaunchUrl() = assertEquals("$base/admin/tool/mobile/launch.php?service=moodle_mobile_app&passport=9&urlscheme=moodlemobile", Sso.launchUrl(base, "9"))
+    @Test fun ssoLaunchUrl() {
+        val l = "$base/admin/tool/mobile/launch.php"
+        assertEquals("$l?service=moodle_mobile_app&passport=9&urlscheme=moodlemobile", Sso.launchUrl(l, "9"))
+        assertEquals("$l?service=moodle_mobile_app&passport=9&urlscheme=moodlemobile&oauthsso=3", Sso.launchUrl(l, "9", 3))
+    }
+
+    // bentuk respons nyata dari Moodle kampus (tool_mobile_get_public_config), disingkat
+    private val publicConfigJson = """[{"error":false,"data":{"wwwroot":"https://lms.kampus.ac.id","httpswwwroot":"https://lms.kampus.ac.id","typeoflogin":1,
+        "launchurl":"https://lms.kampus.ac.id/admin/tool/mobile/launch.php",
+        "identityproviders":[{"name":"Login SSO Google","iconurl":"x","url":"https://lms.kampus.ac.id/auth/oauth2/login.php?id=3&wantsurl=%2F&sesskey=ABC"},
+                             {"name":"Tanpa id","iconurl":"x","url":"https://lms.kampus.ac.id/auth/x"}]}}]"""
+
+    @Test fun publicConfigParsesProvidersAndWwwroot() {
+        var asked = ""
+        MoodleApi.jsonPost = { url, _ -> asked = url; publicConfigJson }
+        val c = MoodleApi.publicConfig(base)
+        assertTrue(asked.contains("service-nologin.php?info=tool_mobile_get_public_config"))
+        assertEquals("https://lms.kampus.ac.id", c.wwwroot); assertEquals(1, c.typeOfLogin)
+        assertEquals(listOf(Idp("Login SSO Google", 3)), c.providers)   // penyedia tanpa ?id= dilewati
+        assertEquals("https://lms.kampus.ac.id/admin/tool/mobile/launch.php", c.launchUrl)
+    }
+
+    @Test fun publicConfigErrorBecomesApiError() {
+        MoodleApi.jsonPost = { _, _ -> """[{"error":true,"exception":{"message":"Layanan web belum aktif"}}]""" }
+        assertTrue(assertThrows(ApiError::class.java) { MoodleApi.publicConfig(base) }.message!!.contains("belum aktif"))
+    }
 
     @Test fun normalizeBaseRequiresHttps() {
         assertEquals("https://a.b/moodle", MoodleApi.normalizeBase(" https://a.b/moodle/ "))

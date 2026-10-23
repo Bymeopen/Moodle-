@@ -5,7 +5,10 @@ import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
 
-data class ChatMsg(val role: String, val text: String)
+/** PDF terlampir (base64) yang dibaca langsung oleh Claude. */
+data class Doc(val name: String, val base64: String)
+
+data class ChatMsg(val role: String, val text: String, val docs: List<Doc> = emptyList())
 
 object Models {
     // default mengikuti rekomendasi Claude API; Sonnet/Haiku lebih murah untuk pemakaian harian
@@ -25,7 +28,14 @@ class ClaudeClient(private val apiKey: String, private val model: String, privat
         /** Body permintaan. Fallback server-side (jika model menolak karena safety) hanya untuk Opus/Sonnet. */
         fun body(model: String, system: String, messages: List<ChatMsg>, stream: Boolean, schema: JSONObject? = null, withFallback: Boolean = true): JSONObject {
             val b = JSONObject().put("model", model).put("max_tokens", if (stream) 64000 else 16000).put("system", system)
-                .put("messages", JSONArray(messages.map { JSONObject().put("role", it.role).put("content", it.text) }))
+                .put("messages", JSONArray(messages.map { m ->
+                    // dengan lampiran: content = [dokumen..., teks]; tanpa lampiran: string biasa
+                    val content: Any = if (m.docs.isEmpty()) m.text else JSONArray(
+                        m.docs.map { d -> JSONObject().put("type", "document").put("title", d.name)
+                            .put("source", JSONObject().put("type", "base64").put("media_type", "application/pdf").put("data", d.base64)) } +
+                            JSONObject().put("type", "text").put("text", m.text))
+                    JSONObject().put("role", m.role).put("content", content)
+                }))
             if (stream) b.put("stream", true)
             if (schema != null) b.put("output_config", JSONObject().put("format", JSONObject().put("type", "json_schema").put("schema", schema)))
             if (withFallback && !model.contains("haiku")) b.put("fallbacks", "default")
@@ -98,8 +108,8 @@ class ClaudeClient(private val apiKey: String, private val model: String, privat
     }
 
     /** Keluaran terstruktur sesuai skema JSON; hasilnya JSON valid atau ApiError. */
-    fun json(system: String, user: String, schema: JSONObject): JSONObject {
-        val c = send { fb -> body(model, system, listOf(ChatMsg("user", user)), stream = false, schema = schema, withFallback = fb) }
+    fun json(system: String, user: String, schema: JSONObject, docs: List<Doc> = emptyList()): JSONObject {
+        val c = send { fb -> body(model, system, listOf(ChatMsg("user", user, docs)), stream = false, schema = schema, withFallback = fb) }
         try {
             val resp = JSONObject(c.inputStream.bufferedReader().use { it.readText() })
             when (resp.optString("stop_reason")) { "refusal" -> throw ApiError("Claude menolak permintaan ini."); "max_tokens" -> throw ApiError("Jawaban terpotong; coba dengan materi lebih pendek.") }
@@ -113,7 +123,8 @@ class ClaudeClient(private val apiKey: String, private val model: String, privat
 object AiMaterial {
     const val MAX_CHARS = 400_000
 
-    fun build(c: Course): String = buildString {
+    /** [fileText] memberi teks hasil ekstraksi file yang sudah diunduh (docx/pptx/txt); file lain hanya dicantumkan namanya. */
+    fun build(c: Course, fileText: (Item, FileRef) -> String? = { _, _ -> null }): String = buildString {
         append("Kursus: ").append(c.name).append('\n')
         if (c.summary.isNotBlank()) append(c.summary).append('\n')
         var section: String? = null
@@ -122,13 +133,18 @@ object AiMaterial {
             append("\n### [").append(i.type).append("] ").append(i.title).append('\n')
             if (i.type != "link" && i.content.isNotBlank()) append(i.content).append('\n')
             i.dueAt?.let { append("Tenggat (epoch detik): ").append(it).append('\n') }
-            if (i.files.isNotEmpty()) append("File terlampir (isi tidak dibaca): ").append(i.files.joinToString { it.name }).append('\n')
+            val unread = mutableListOf<String>()
+            for (f in i.files) {
+                val t = fileText(i, f)
+                if (t != null) append("\n#### Isi file ").append(f.name).append('\n').append(t).append('\n') else unread += f.name
+            }
+            if (unread.isNotEmpty()) append("File terlampir (isi tidak dibaca): ").append(unread.joinToString()).append('\n')
         }
     }
 
     /** Teks materi atau ApiError bila terlalu panjang (tidak dipotong diam-diam). */
-    fun forAi(c: Course): String {
-        val t = build(c)
+    fun forAi(c: Course, fileText: (Item, FileRef) -> String? = { _, _ -> null }): String {
+        val t = build(c, fileText)
         if (t.length > MAX_CHARS) throw ApiError("Materi kursus terlalu panjang untuk satu permintaan (${t.length / 1000}K karakter)")
         return t
     }

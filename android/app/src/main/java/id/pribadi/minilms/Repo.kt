@@ -62,9 +62,15 @@ class Repo private constructor(ctx: Context) {
     }
 
     // ---------- SSO yang sedang berjalan ----------
-    fun beginSso(base: String, passport: String) = prefs.edit().putString("sso_base", base).putString("sso_passport", passport).apply()
-    fun pendingSso(): Pair<String, String>? = prefs.getString("sso_base", null)?.let { b -> prefs.getString("sso_passport", null)?.let { b to it } }
-    fun clearSso() = prefs.edit().remove("sso_base").remove("sso_passport").apply()
+    /** [base] = alamat situs yang dipakai API; [sigBase] = wwwroot dari Moodle (dasar tanda tangan callback). */
+    data class SsoState(val base: String, val sigBase: String, val passport: String)
+    fun beginSso(base: String, sigBase: String, passport: String) = prefs.edit().putString("sso_base", base).putString("sso_sig", sigBase).putString("sso_passport", passport).apply()
+    fun pendingSso(): SsoState? {
+        val b = prefs.getString("sso_base", null) ?: return null
+        val p = prefs.getString("sso_passport", null) ?: return null
+        return SsoState(b, prefs.getString("sso_sig", b) ?: b, p)
+    }
+    fun clearSso() = prefs.edit().remove("sso_base").remove("sso_sig").remove("sso_passport").apply()
 
     // ---------- snapshot ----------
     private fun loadSnapshot(): Snapshot? = runCatching { JSONObject(snapFile.readText()).toSnapshot() }.getOrNull()
@@ -114,6 +120,10 @@ class Repo private constructor(ctx: Context) {
         for (i in c.items) for (f in i.files) { n++; b += f.size; if (isDownloaded(c.id, i.id, f)) { d++; db += f.size } }
         return CourseStats(n, d, b, db)
     }
+
+    /** Teks file yang sudah diunduh (docx/pptx/txt/md/csv) untuk konteks AI; null bila tidak tersedia. */
+    fun textOf(courseId: Long, itemId: Long, f: FileRef): String? =
+        if (isDownloaded(courseId, itemId, f)) FileText.extract(fileOf(courseId, itemId, f), f.name) else null
 
     fun storageUsed(): Long = root.walkBottomUp().filter { it.isFile }.sumOf { it.length() }
 

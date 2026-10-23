@@ -61,20 +61,27 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         Jobs.scheduleReminders(getApplication(), repo.reminders)
     }
 
-    /** Mulai SSO: kembalikan URL yang harus dibuka di browser. */
-    fun startSso(rawUrl: String): String? = try {
+    /** Opsi login situs (penyedia SSO dll.) setelah pengguna mengisi alamat; null bila belum dicek. */
+    private val _options = MutableStateFlow<PublicConfig?>(null)
+    val loginOptions: StateFlow<PublicConfig?> = _options
+    fun resetOptions() { _options.value = null }
+
+    fun checkLogin(rawUrl: String) = launchBusy { _options.value = MoodleApi.publicConfig(MoodleApi.normalizeBase(rawUrl)) }
+
+    /** Mulai SSO. [idp] = penyedia pilihan (null = halaman login Moodle biasa). Mengembalikan URL untuk dibuka di browser. */
+    fun startSso(rawUrl: String, cfg: PublicConfig, idp: Idp?): String? = try {
         val base = MoodleApi.normalizeBase(rawUrl)
         val passport = (100000..999999).random().toString()
-        repo.beginSso(base, passport)
-        Sso.launchUrl(base, passport)
+        repo.beginSso(base, cfg.wwwroot.trimEnd('/'), passport)
+        Sso.launchUrl(cfg.launchUrl, passport, idp?.id)
     } catch (e: Exception) { fail(e); null }
 
     fun handleCallback(uri: Uri) {
-        val (base, passport) = repo.pendingSso() ?: run { _message.value = "Tidak ada login yang sedang berjalan; mulai dari tombol SSO"; return }
+        val st = repo.pendingSso() ?: run { _message.value = "Tidak ada login yang sedang berjalan; mulai dari tombol SSO"; return }
         launchBusy {
-            val token = Sso.parseCallback(uri.toString(), base, passport)
+            val token = Sso.parseCallback(uri.toString(), st.sigBase, st.passport)
             repo.clearSso()
-            finishLogin(base, token)
+            finishLogin(st.base, token)
         }
     }
 
@@ -139,6 +146,23 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         tab.intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         try { tab.launchUrl(ctx, Uri.parse("https://notebooklm.google.com")) }
         catch (e: ActivityNotFoundException) { _message.value = "Tidak ada browser untuk membuka NotebookLM" }
+    }
+
+    /** Tulis ZIP kursus ke lokasi pilihan pengguna (Storage Access Framework; tanpa izin penyimpanan). */
+    fun exportZip(c: Course, uri: Uri) = launchBusy {
+        val ctx = getApplication<Application>()
+        val prefix = safeName(c.name)
+        val entries = c.items.flatMap { i ->
+            i.files.filter { repo.isDownloaded(c.id, i.id, it) }.map { f ->
+                val path = listOf(prefix, i.section, i.title).filter { it.isNotEmpty() }.joinToString("/") + "/" + f.path.trim('/') + "/" + f.name
+                path to repo.fileOf(c.id, i.id, f)
+            }
+        }
+        val summary = AiMaterial.build(c) { i, f -> repo.textOf(c.id, i.id, f) }
+        (ctx.contentResolver.openOutputStream(uri, "wt") ?: throw ApiError("Tidak bisa menulis ke lokasi itu")).use {
+            ZipExport.write(it, entries, mapOf("$prefix/Ringkasan.md" to summary))
+        }
+        _message.value = "ZIP tersimpan (${entries.size} file + ringkasan)"
     }
 
     fun openLink(url: String) {

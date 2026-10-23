@@ -102,11 +102,17 @@ fun LoginScreen(vm: MainViewModel) {
         Text("Mini LMS", style = MaterialTheme.typography.headlineLarge, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
         Text("Unduh semua kursus dan materi Moodle kampus untuk dibaca offline.")
         OutlinedTextField(url, { url = it }, label = { Text("Alamat Moodle kampus") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-        Button({ vm.startSso(url)?.let { ctx.startActivity(Intent(Intent.ACTION_VIEW, android.net.Uri.parse(it))) } }, enabled = !busy, modifier = Modifier.fillMaxWidth()) {
-            Text("Masuk dengan SSO / Google")
+        val cfg by vm.loginOptions.collectAsStateWithLifecycle()
+        if (cfg == null) {
+            Button({ vm.checkLogin(url) }, enabled = !busy && url.length > 8, modifier = Modifier.fillMaxWidth()) { Text("Lanjut") }
+        } else {
+            val c = cfg!!
+            val open = { idp: Idp? -> vm.startSso(url, c, idp)?.let { ctx.startActivity(Intent(Intent.ACTION_VIEW, android.net.Uri.parse(it))) }; Unit }
+            c.providers.forEach { p -> Button({ open(p) }, enabled = !busy, modifier = Modifier.fillMaxWidth()) { Text(p.name) } }
+            OutlinedButton({ open(null) }, enabled = !busy, modifier = Modifier.fillMaxWidth()) { Text(if (c.providers.isEmpty()) "Masuk lewat browser" else "Masuk dengan akun Moodle (browser)") }
+            TextButton({ vm.resetOptions() }) { Text("Ganti alamat") }
+            Text("Browser akan terbuka untuk login. Setelah berhasil, Anda kembali ke aplikasi ini otomatis. Bila Android menanyakan aplikasi pembuka, pilih Mini LMS.", style = MaterialTheme.typography.bodySmall)
         }
-        Text("Browser akan terbuka untuk login. Setelah berhasil, Anda kembali ke aplikasi ini otomatis. Bila Android menanyakan aplikasi pembuka, pilih Mini LMS.",
-            style = MaterialTheme.typography.bodySmall)
         if (busy) LinearProgressIndicator(Modifier.fillMaxWidth())
         TextButton({ more = !more }) { Text(if (more) "Sembunyikan cara lain" else "Cara masuk lain") }
         if (more) {
@@ -223,6 +229,7 @@ fun CourseScreen(vm: MainViewModel, c: Course, onBack: () -> Unit) {
     val dl by vm.download.collectAsStateWithLifecycle()
     val stats = remember(c, tick) { vm.repo.stats(c) }
     val sections = remember(c) { c.items.groupBy { it.section } }
+    val zipLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/zip")) { uri -> if (uri != null) vm.exportZip(c, uri) }
 
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 24.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         item {
@@ -241,6 +248,7 @@ fun CourseScreen(vm: MainViewModel, c: Course, onBack: () -> Unit) {
                     OutlinedButton({ vm.shareToNotebook(c) }) { Text("Kirim ke NotebookLM") }
                     TextButton({ vm.openNotebookLm() }) { Text("Buka NotebookLM") }
                 }
+                OutlinedButton({ zipLauncher.launch("${safeName(c.name)}.zip") }) { Text("Ekspor ZIP") }
             }
         }
         sections.forEach { (name, list) ->

@@ -51,9 +51,12 @@ object Sso {
 
     private fun md5(s: String) = MessageDigest.getInstance("MD5").digest(s.toByteArray()).joinToString("") { "%02x".format(it) }
 
-    /** Tautan resmi Moodle untuk login SSO; hasilnya dialihkan ke moodlemobile://token=... */
-    fun launchUrl(base: String, passport: String) =
-        "$base/admin/tool/mobile/launch.php?service=moodle_mobile_app&passport=$passport&urlscheme=$SCHEME"
+    /**
+     * Tautan resmi Moodle untuk login SSO; hasilnya dialihkan ke moodlemobile://token=...
+     * [oauthId] = id penyedia identitas OAuth2 (mis. Google) agar langsung membuka login penyedia itu, seperti aplikasi resmi.
+     */
+    fun launchUrl(launchBase: String, passport: String, oauthId: Int? = null) =
+        "$launchBase?service=moodle_mobile_app&passport=$passport&urlscheme=$SCHEME" + (oauthId?.let { "&oauthsso=$it" } ?: "")
 
     /**
      * Ambil token dari tautan callback `moodlemobile://token=BASE64`, isi BASE64 = "signature:::token[:::privatetoken]".
@@ -71,7 +74,41 @@ object Sso {
     }
 }
 
+/** Penyedia identitas (mis. Login SSO Google) dari konfigurasi publik Moodle. */
+data class Idp(val name: String, val id: Int)
+
+/** Konfigurasi publik situs: tanpa login. [wwwroot] dipakai untuk memverifikasi tanda tangan callback SSO. */
+data class PublicConfig(val wwwroot: String, val launchUrl: String, val typeOfLogin: Int, val providers: List<Idp>)
+
 object MoodleApi {
+    /** Pengganti di tes: (url, jsonBody) -> respons. */
+    var jsonPost: (String, String) -> String = { url, body ->
+        val c = URL(url).openConnection() as HttpURLConnection
+        try {
+            c.requestMethod = "POST"; c.connectTimeout = 20_000; c.readTimeout = 30_000; c.doOutput = true; c.instanceFollowRedirects = false
+            c.setRequestProperty("Content-Type", "application/json"); c.setRequestProperty("User-Agent", "MiniLMS/2.0")
+            c.outputStream.use { it.write(body.toByteArray()) }
+            if (c.responseCode != 200) throw ApiError("Moodle membalas HTTP ${c.responseCode}")
+            c.inputStream.bufferedReader().use { it.readText() }
+        } finally { c.disconnect() }
+    }
+
+    /** Ambil metode login yang tersedia (endpoint publik yang sama dengan aplikasi Moodle resmi). */
+    fun publicConfig(base: String): PublicConfig {
+        val resp = JSONArray(jsonPost("$base/lib/ajax/service-nologin.php?info=tool_mobile_get_public_config",
+            """[{"index":0,"methodname":"tool_mobile_get_public_config","args":{}}]"""))
+        val first = resp.getJSONObject(0)
+        if (first.optBoolean("error")) throw ApiError(first.optJSONObject("exception")?.optString("message") ?: "Situs ini tidak mendukung aplikasi mobile")
+        val d = first.getJSONObject("data")
+        val idps = d.optJSONArray("identityproviders") ?: JSONArray()
+        val providers = (0 until idps.length()).mapNotNull { i ->
+            val o = idps.getJSONObject(i)
+            // id penyedia ada di parameter ?id= pada URL login-nya
+            Regex("[?&]id=(\\d+)").find(o.optString("url"))?.groupValues?.get(1)?.toIntOrNull()?.let { Idp(o.optString("name"), it) }
+        }
+        return PublicConfig(d.optString("wwwroot", base), d.optString("launchurl", "$base/admin/tool/mobile/launch.php"), d.optInt("typeoflogin", 1), providers)
+    }
+
     var transport: Transport = HttpTransport
     /** HTML -> teks. Default memakai android.text.Html; tes menggantinya. */
     var htmlToText: (String) -> String = { html ->

@@ -52,6 +52,7 @@ fun AiTab(vm: MainViewModel, onReview: () -> Unit) {
             if (busy) LinearProgressIndicator(Modifier.fillMaxWidth())
             error?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
             if (mode != AiMode.CHAT && selected == null) Text("Pilih kursus untuk fitur ini.", style = MaterialTheme.typography.bodySmall)
+            selected?.let { PdfPicker(vm, it) }
         }
         Box(Modifier.weight(1f)) {
             when (mode) {
@@ -60,6 +61,30 @@ fun AiTab(vm: MainViewModel, onReview: () -> Unit) {
                 AiMode.QUIZ -> QuizPane(vm, selected)
                 AiMode.CARDS -> CardsPane(vm, selected, onReview)
             }
+        }
+    }
+}
+
+/** Pilih PDF terunduh untuk dibaca langsung oleh Claude. Default tidak ada yang dipilih karena PDF memakai banyak token. */
+@Composable
+private fun PdfPicker(vm: MainViewModel, c: Course) {
+    val tick by vm.tick.collectAsStateWithLifecycle()
+    val sel by vm.ai.selected.collectAsStateWithLifecycle()
+    val pdfs = remember(c, tick) { vm.ai.pdfsOf(c) }
+    var open by rememberSaveable(c.id) { mutableStateOf(false) }
+    LaunchedEffect(c.id) { vm.ai.clearSelection() }
+    val total = pdfs.filter { it.key in sel }.sumOf { it.size }
+    TextButton({ open = !open }, contentPadding = PaddingValues(0.dp)) {
+        Text("📎 Sertakan PDF (${pdfs.size} tersedia${if (sel.isNotEmpty()) ", ${sel.size} dipilih · ${total / 1048576} MB" else ""}) ${if (open) "▲" else "▼"}")
+    }
+    if (open) {
+        if (pdfs.isEmpty()) Text("Belum ada PDF yang diunduh di kursus ini.", style = MaterialTheme.typography.bodySmall)
+        else {
+            Text("Claude membaca PDF langsung (termasuk gambar/tabel). Satu halaman ≈ 1.500–3.000 token, jadi pilih seperlunya. Batas total 20 MB. Berlaku untuk percakapan baru, ringkasan, soal, dan kartu.", style = MaterialTheme.typography.bodySmall)
+            pdfs.forEach { p -> Row(verticalAlignment = Alignment.CenterVertically) {
+                Checkbox(p.key in sel, { vm.ai.toggle(p.key) }); Text("${p.name} (${p.size / 1024} KB)", maxLines = 2)
+            } }
+            if (total > MAX_PDF_BYTES) Text("Total melebihi 20 MB.", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
         }
     }
 }
@@ -98,7 +123,10 @@ private fun ChatPane(vm: MainViewModel, courseId: Long?) {
                 val m = chat[i]; val me = m.role == "user"
                 Card(Modifier.fillMaxWidth().padding(start = if (me) 32.dp else 0.dp, end = if (me) 0.dp else 32.dp),
                     colors = CardDefaults.cardColors(containerColor = if (me) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant)) {
-                    SelectionContainer { Text(m.text.ifEmpty { "…" }, Modifier.padding(12.dp)) }
+                    Column(Modifier.padding(12.dp)) {
+                        if (m.docs.isNotEmpty()) Text("📎 ${m.docs.size} PDF terlampir", style = MaterialTheme.typography.labelSmall)
+                        SelectionContainer { Text(m.text.ifEmpty { "…" }) }
+                    }
                 }
             }
         }

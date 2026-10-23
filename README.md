@@ -52,8 +52,10 @@ Catatan keamanan: jawaban siswa dan materi dikirim sebagai data (dibungkus tag, 
 `android/` adalah aplikasi Kotlin + Jetpack Compose yang terhubung **langsung** ke Moodle kampus lewat Web Service resmi (seperti Moodle Mobile). Server Node di atas tidak diperlukan.
 
 - Login SSO/Google otomatis: aplikasi membuka tautan resmi `launch.php` dan menangkap callback `moodlemobile://token=...` (tanda tangan md5(url+passport) diverifikasi). Alternatif: tempel token, atau username+password.
+- Login mengikuti metode kampus: aplikasi membaca konfigurasi publik Moodle (`tool_mobile_get_public_config`), menampilkan penyedia SSO yang tersedia (mis. "Login SSO Google") dan memulainya langsung lewat `launch.php?...&oauthsso=<id>`, persis seperti aplikasi resmi. Tanda tangan callback diverifikasi terhadap `wwwroot` yang dilaporkan Moodle.
 - Tab Kursus: kartu kursus dengan progres unduhan, **Unduh semua** (WorkManager + notifikasi progres, jeda/lanjut, opsi hanya Wi-Fi), detail kursus per bagian, buka file dengan aplikasi PDF/dokumen bawaan.
-- Tab **AI** (Claude, kunci API milik Anda, disimpan terenkripsi di Android Keystore): chat tutor (opsional dengan konteks kursus), ringkasan, soal latihan pilihan ganda, dan kartu hafalan dengan review SM-2. Hasil AI ditinjau dulu sebelum disimpan. Claude tidak punya login SSO untuk aplikasi pihak ketiga, jadi aksesnya lewat kunci API (Claude Code adalah alat terminal dan tidak berjalan di dalam aplikasi).
+- Tab **AI** (Claude, kunci API milik Anda, disimpan terenkripsi di Android Keystore): chat tutor (opsional dengan konteks kursus), ringkasan, soal latihan pilihan ganda, dan kartu hafalan dengan review SM-2. Hasil AI ditinjau dulu sebelum disimpan. Konteks AI memakai teks halaman, deskripsi tugas, dan isi file **docx/pptx/txt/md/csv** yang sudah diunduh; **PDF** bisa dipilih untuk dilampirkan dan dibaca langsung oleh Claude (maks 20 MB; PDF memakai banyak token, jadi default tidak ada yang dipilih). Claude tidak punya login SSO untuk aplikasi pihak ketiga, jadi aksesnya lewat kunci API (Claude Code adalah alat terminal dan tidak berjalan di dalam aplikasi).
+- **Ekspor ZIP** (detail kursus): menyimpan ringkasan teks + semua file unduhan (folder per bagian/item) ke lokasi pilihan Anda lewat penyimpanan Android, tanpa izin tambahan.
 - **Kirim ke NotebookLM** (detail kursus): menyiapkan ringkasan teks kursus (.md) + file yang sudah diunduh, lalu membuka menu bagikan Android; pilih NotebookLM atau Google Drive (maks 50 sumber). **Buka NotebookLM** memakai Chrome Custom Tab (login Google lewat browser; Google melarang login OAuth di WebView tertanam). NotebookLM pribadi tidak punya API publik, jadi tidak ada unggah otomatis.
 - Tab Tenggat, Nilai, dan Lainnya (penyimpanan, hapus unduhan, pengingat tenggat 24 jam, keluar).
 - Semua data di penyimpanan privat aplikasi. Token tidak dikirim lewat URL; file hanya diunduh dari host Moodle yang sama.
@@ -63,4 +65,17 @@ Build (JDK 17+, Gradle 8.x, Android SDK platform 34 + build-tools 34):
 cd android && echo "sdk.dir=$HOME/android-sdk" > local.properties
 gradle testDebugUnitTest assembleDebug   # APK: app/build/outputs/apk/debug/app-debug.apk
 ```
+**APK rilis dengan kunci Anda sendiri** (agar pembaruan bisa dipasang di atas versi lama): buat kunci sekali di komputer Anda dan simpan aman (jika hilang, tidak bisa memperbarui aplikasi yang sudah terpasang):
+```bash
+keytool -genkeypair -v -keystore ~/minilms-release.jks -alias minilms -keyalg RSA -keysize 2048 -validity 10000
+cd android && cat > keystore.properties <<EOF
+storeFile=/home/ANDA/minilms-release.jks
+storePassword=...
+keyAlias=minilms
+keyPassword=...
+EOF
+gradle assembleRelease     # app/build/outputs/apk/release/app-release.apk
+```
+`keystore.properties`, `*.jks`, dan `*.keystore` sudah di-gitignore; jangan pernah di-commit atau dibagikan. Tanpa `keystore.properties`, build rilis tidak ditandatangani.
+
 APK debug memakai kunci debug lokal; membangun ulang di mesin lain memakai kunci berbeda sehingga pembaruan harus uninstall dulu. Belum ada: pesan/forum, kuis Moodle, pengumpulan tugas. Panduan untuk agen AI (Claude Code/Antigravity): `AGENTS.md`.
