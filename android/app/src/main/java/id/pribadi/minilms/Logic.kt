@@ -81,7 +81,7 @@ object Logic {
 }
 
 /** Jenis file untuk ikon dan warna. */
-enum class FileKind { PDF, DOC, PPT, XLS, IMG, ZIP, OTHER;
+enum class FileKind { PDF, DOC, PPT, XLS, IMG, ZIP, VIDEO, AUDIO, OTHER;
     companion object {
         fun of(name: String, mime: String?): FileKind {
             val ext = name.substringAfterLast('.', "").lowercase()
@@ -92,6 +92,8 @@ enum class FileKind { PDF, DOC, PPT, XLS, IMG, ZIP, OTHER;
                 ext in setOf("xls", "xlsx", "csv", "ods") -> XLS
                 ext in setOf("png", "jpg", "jpeg", "gif", "webp") || mime?.startsWith("image/") == true -> IMG
                 ext in setOf("zip", "rar", "7z") -> ZIP
+                ext in setOf("mp4", "m4v", "webm", "mkv", "3gp", "mov") || mime?.startsWith("video/") == true -> VIDEO
+                ext in setOf("mp3", "m4a", "wav", "ogg", "aac", "opus") || mime?.startsWith("audio/") == true -> AUDIO
                 else -> OTHER
             }
         }

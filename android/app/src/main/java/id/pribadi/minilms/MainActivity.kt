@@ -98,6 +98,7 @@ fun MainScreen(vm: MainViewModel) {
     val syncError by vm.syncError.collectAsStateWithLifecycle()
     val dl by vm.download.collectAsStateWithLifecycle()
     val tick by vm.tick.collectAsStateWithLifecycle()
+    val playing by vm.playing.collectAsStateWithLifecycle()
     val done by vm.doneAssignments.collectAsStateWithLifecycle()
     val cards by vm.cards.collectAsStateWithLifecycle()
     val hasKey by vm.ai.hasKey.collectAsStateWithLifecycle()
@@ -113,6 +114,7 @@ fun MainScreen(vm: MainViewModel) {
     val perm = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { }
     LaunchedEffect(Unit) { if (Build.VERSION.SDK_INT >= 33 && !Notif.canPost(vm.getApplication()) && !vm.repo.askedNotif) { vm.repo.askedNotif = true; perm.launch(Manifest.permission.POST_NOTIFICATIONS) } }
 
+    playing?.let { VideoPlayerDialog(it, vm::stopPlaying) }
     BackHandler(enabled = overlay.isNotEmpty() || tab != 0) { if (overlay.isNotEmpty()) overlay = "" else tab = 0 }
 
     val course = if (overlay.startsWith("course:")) courses.firstOrNull { it.id == overlay.removePrefix("course:").toLongOrNull() } else null

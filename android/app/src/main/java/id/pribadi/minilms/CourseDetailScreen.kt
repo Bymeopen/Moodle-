@@ -35,7 +35,7 @@ fun CourseDetailScreen(vm: MainViewModel, c: Course, st: Repo.CourseStats, onBac
     CourseDetailContent(c, st, nowSec, done, dl, progress,
         isDownloaded = { i, f -> tick >= 0 && vm.repo.isDownloaded(c.id, i.id, f) }, fileKey = { i, f -> vm.repo.fileKey(c.id, i.id, f) },
         onBack = onBack, onDownloadCourse = { vm.downloadCourse(c.id) }, onPause = vm::pause, onDeleteDownloads = { vm.deleteDownloads(c.id) },
-        onOpenFile = { i, f -> vm.open(c, i, f) }, onDownloadFile = { i, f -> vm.downloadFile(c, i, f) }, onLink = vm::openLink, onToggleDone = vm::toggleDone,
+        onOpenFile = { i, f -> vm.open(c, i, f) }, onDownloadFile = { i, f -> vm.downloadFile(c, i, f) }, onLink = vm::openLink, onOpenMoodle = vm::openMoodle, onToggleDone = vm::toggleDone,
         onAskAi = onAskAi, onExportZip = { zip.launch("${safeName(c.name)}.zip") }, onShareNotebook = { vm.shareToNotebook(c) }, onOpenWeb = vm::openWeb)
 }
 
@@ -46,12 +46,12 @@ fun CourseDetailContent(
     c: Course, st: Repo.CourseStats, nowSec: Long, doneIds: Set<Long>, dl: DlState, fileProgress: Map<String, Float>,
     isDownloaded: (Item, FileRef) -> Boolean, fileKey: (Item, FileRef) -> String,
     onBack: () -> Unit, onDownloadCourse: () -> Unit, onPause: () -> Unit, onDeleteDownloads: () -> Unit,
-    onOpenFile: (Item, FileRef) -> Unit, onDownloadFile: (Item, FileRef) -> Unit, onLink: (String) -> Unit, onToggleDone: (Long) -> Unit,
+    onOpenFile: (Item, FileRef) -> Unit, onDownloadFile: (Item, FileRef) -> Unit, onLink: (String) -> Unit, onOpenMoodle: (String) -> Unit, onToggleDone: (Long) -> Unit,
     onAskAi: (AiMode) -> Unit, onExportZip: () -> Unit, onShareNotebook: () -> Unit, onOpenWeb: (String) -> Unit,
 ) {
     var tab by rememberSaveable { mutableStateOf(DetailTab.MATERI) }
-    val materials = remember(c) { c.items.filter { it.type != "assignment" } }
-    val tasks = remember(c) { c.items.filter { it.type == "assignment" }.sortedBy { it.dueAt ?: Long.MAX_VALUE } }
+    val materials = remember(c) { c.items.filter { !it.isTask } }
+    val tasks = remember(c) { c.items.filter { it.isTask }.sortedBy { it.dueAt ?: Long.MAX_VALUE } }
     val sections = remember(c) { materials.groupBy { it.section } }
     var expanded by rememberSaveable(c.id) { mutableStateOf(sections.keys.take(1).toSet()) }
     val summary = remember(c) { Logic.gradeSummary(c) }
@@ -134,12 +134,12 @@ fun CourseDetailContent(
                             Icon(if (open) Icons.Rounded.ExpandLess else Icons.Rounded.ExpandMore, null, tint = MaterialTheme.colorScheme.outline)
                         }
                     }
-                    if (open) items(list.size, key = { "m_${list[it].id}" }) { idx -> MaterialCard(list[idx], isDownloaded, fileKey, fileProgress, onOpenFile, onDownloadFile, onLink) }
+                    if (open) items(list.size, key = { "m_${list[it].id}" }) { idx -> MaterialCard(list[idx], isDownloaded, fileKey, fileProgress, onOpenFile, onDownloadFile, onLink, onOpenMoodle) }
                 }
             }
             DetailTab.TUGAS -> {
                 if (tasks.isEmpty()) item { EmptyState(Icons.Rounded.Assignment, "Tidak ada tugas", "Kursus ini tidak punya tugas yang terlihat.") }
-                items(tasks.size, key = { "t_${tasks[it].id}" }) { TaskCard(tasks[it], tasks[it].id in doneIds, nowSec) { onToggleDone(tasks[it].id) } }
+                items(tasks.size, key = { "t_${tasks[it].id}" }) { TaskCard(tasks[it], tasks[it].id in doneIds, nowSec, onOpenMoodle) { onToggleDone(tasks[it].id) } }
             }
             DetailTab.NILAI -> item { GradesPane(c, summary) }
         }
@@ -161,7 +161,7 @@ private fun AiChip(icon: androidx.compose.ui.graphics.vector.ImageVector, label:
 
 @Composable
 private fun MaterialCard(it: Item, isDownloaded: (Item, FileRef) -> Boolean, fileKey: (Item, FileRef) -> String, progress: Map<String, Float>,
-                         onOpenFile: (Item, FileRef) -> Unit, onDownloadFile: (Item, FileRef) -> Unit, onLink: (String) -> Unit) {
+                         onOpenFile: (Item, FileRef) -> Unit, onDownloadFile: (Item, FileRef) -> Unit, onLink: (String) -> Unit, onOpenMoodle: (String) -> Unit) {
     var open by rememberSaveable(it.id) { mutableStateOf(false) }
     val cs = MaterialTheme.colorScheme
     val hasText = it.type == "page" && it.content.isNotBlank()
@@ -178,6 +178,9 @@ private fun MaterialCard(it: Item, isDownloaded: (Item, FileRef) -> Boolean, fil
                 else Text(it.content, style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant, maxLines = 2, overflow = TextOverflow.Ellipsis)
             }
             it.files.forEach { f -> FileRow(it, f, isDownloaded(it, f), progress[fileKey(it, f)], onOpenFile, onDownloadFile) }
+            // Modul Moodle tanpa file/tautan luar (video terpasang, forum, dll.): buka halaman aslinya dengan login otomatis.
+            if (it.type == "link" && it.files.isEmpty() && !it.content.startsWith("http") && it.url.isNotEmpty())
+                OutlinedButton({ onOpenMoodle(it.url) }, Modifier.fillMaxWidth()) { Icon(Icons.Rounded.OpenInNew, null, Modifier.size(18.dp)); Spacer(Modifier.width(8.dp)); Text("Buka di Moodle") }
         }
     }
 }
@@ -201,7 +204,7 @@ private fun FileRow(i: Item, f: FileRef, downloaded: Boolean, progress: Float?, 
 }
 
 @Composable
-private fun TaskCard(it: Item, done: Boolean, nowSec: Long, onToggle: () -> Unit) {
+private fun TaskCard(it: Item, done: Boolean, nowSec: Long, onOpenMoodle: (String) -> Unit, onToggle: () -> Unit) {
     var open by rememberSaveable(it.id) { mutableStateOf(false) }
     val cs = MaterialTheme.colorScheme
     val due = it.dueAt
@@ -217,11 +220,13 @@ private fun TaskCard(it: Item, done: Boolean, nowSec: Long, onToggle: () -> Unit
                         Text(java.text.SimpleDateFormat("d MMM yyyy · HH:mm", Locale("id")).format(java.util.Date(due * 1000)), style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant)
                     }
                 }
+                if (it.type == "quiz") Pill("Tes", cs.tertiaryContainer, cs.onTertiaryContainer, Icons.Rounded.Quiz)
                 IconButton(onToggle) { Icon(if (done) Icons.Rounded.CheckCircle else Icons.Rounded.RadioButtonUnchecked, if (done) "Tandai belum selesai" else "Tandai selesai", tint = if (done) cs.secondary else cs.outline) }
             }
             if (open) {
                 if (it.content.isNotBlank()) Text(it.content, Modifier.padding(end = 10.dp), style = MaterialTheme.typography.bodyMedium)
-                Text("Kumpulkan dan lihat nilai di Moodle kampus.", Modifier.padding(end = 10.dp), style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant)
+                Text(if (it.type == "quiz") "Tes dikerjakan online di Moodle; info jadwal tersimpan untuk offline." else "Kumpulkan dan lihat nilai di Moodle kampus.", Modifier.padding(end = 10.dp), style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant)
+                if (it.url.isNotEmpty()) Button({ onOpenMoodle(it.url) }, Modifier.padding(end = 10.dp)) { Text(if (it.type == "quiz") "Kerjakan tes di Moodle" else "Buka di Moodle") }
             }
         }
     }

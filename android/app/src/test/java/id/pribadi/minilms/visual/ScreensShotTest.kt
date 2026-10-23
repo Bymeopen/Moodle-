@@ -56,7 +56,7 @@ class MoreShotTest {
     private fun detail(mode: ThemeMode) = show("detail", mode) {
         CourseDetailContent(Fx.akuntansi.copy(items = Fx.akuntansi.items + Fx.aik.items.take(3), summary = "Dasar-dasar pencatatan dan pelaporan keuangan."), Repo.CourseStats(3, 1, 21_000_000, 5_800_000), Fx.now, setOf(12L), DlState(), mapOf("12/13/${"https://lms.kampus.ac.id/webservice/pluginfile.php/Buku-Ajar-Akuntansi.pdf".hashCode()}" to 0.4f),
             isDownloaded = { _, f -> f.name.startsWith("Modul") }, fileKey = { i, f -> "12/${i.id}/${f.url.hashCode()}" }, onBack = {}, onDownloadCourse = {}, onPause = {}, onDeleteDownloads = {},
-            onOpenFile = { _, _ -> }, onDownloadFile = { _, _ -> }, onLink = {}, onToggleDone = {}, onAskAi = {}, onExportZip = {}, onShareNotebook = {}, onOpenWeb = {})
+            onOpenFile = { _, _ -> }, onDownloadFile = { _, _ -> }, onLink = {}, onOpenMoodle = {}, onToggleDone = {}, onAskAi = {}, onExportZip = {}, onShareNotebook = {}, onOpenWeb = {})
     }
     @Test fun detailLight() = detail(ThemeMode.LIGHT)
     @Test fun detailDark() = detail(ThemeMode.DARK)

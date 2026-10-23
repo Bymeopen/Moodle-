@@ -99,7 +99,7 @@ class ReminderWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(c
             val due = i.dueAt ?: continue
             val key = "${i.id}:$due"
             if (i.id in repo.doneAssignments.value) continue   // sudah ditandai selesai
-            if (i.type != "assignment" || due < now || due - now > 24 * 3600 || prefs.getBoolean(key, false)) continue
+            if (!i.isTask || due < now || due - now > 24 * 3600 || prefs.getBoolean(key, false)) continue
             val n = NotificationCompat.Builder(applicationContext, Notif.CH_DEADLINE).setSmallIcon(android.R.drawable.ic_popup_reminder)
                 .setContentTitle("Tenggat < 24 jam: ${i.title}").setContentText(c.name).setAutoCancel(true).setContentIntent(Notif.openApp(applicationContext)).build()
             NotificationManagerCompat.from(applicationContext).notify(key.hashCode(), n)

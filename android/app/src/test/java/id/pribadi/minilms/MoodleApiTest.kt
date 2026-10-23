@@ -26,6 +26,7 @@ class MoodleApiTest {
                     "core_webservice_get_site_info" -> """{"userid":7,"fullname":"Budi","sitename":"Kampus X"}"""
                     "core_enrol_get_users_courses" -> """[{"id":11,"fullname":"Algoritma","shortname":"ALGO","summary":"<p>Dasar &amp; lanjut</p>"}]"""
                     "mod_assign_get_assignments" -> """{"courses":[{"id":11,"assignments":[{"cmid":3,"intro":"<p>Kerjakan</p>","duedate":2000000000,"grade":80}]}]}"""
+                    "mod_quiz_get_quizzes_by_courses" -> """{"quizzes":[]}"""
                     "mod_page_get_pages_by_courses" -> """{"pages":[{"coursemodule":2,"content":"<b>Isi</b> halaman"}]}"""
                     "core_course_get_contents" -> """[{"name":"Minggu 1","modules":[
                         {"id":2,"modname":"page","name":"Intro"},

@@ -28,7 +28,7 @@ import java.util.Locale
 data class DeadlineRow(val course: Course, val item: Item)
 
 fun deadlinesOf(s: Snapshot?): List<DeadlineRow> = s?.courses.orEmpty()
-    .flatMap { c -> c.items.filter { it.type == "assignment" && it.dueAt != null }.map { DeadlineRow(c, it) } }.sortedBy { it.item.dueAt }
+    .flatMap { c -> c.items.filter { it.isTask && it.dueAt != null }.map { DeadlineRow(c, it) } }.sortedBy { it.item.dueAt }
 
 private fun fmtDay(sec: Long) = SimpleDateFormat("EEE, d MMM · HH:mm", Locale("id")).format(Date(sec * 1000))
 

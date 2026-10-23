@@ -98,8 +98,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     // ---------- login ----------
-    private fun finishLogin(base: String, token: String) {
-        val s = MoodleApi.siteInfo(base, token)  // verifikasi token sekaligus
+    private fun finishLogin(base: String, token: String, privateToken: String = "") {
+        val s = MoodleApi.siteInfo(base, token, privateToken)  // verifikasi token sekaligus
         repo.saveSite(s)
         Jobs.scheduleReminders(getApplication(), repo.reminders)
         repo.sync()
@@ -123,17 +123,18 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun handleCallback(uri: Uri) {
         val st = repo.pendingSso() ?: run { _message.value = "Tidak ada login yang sedang berjalan; mulai dari tombol SSO"; return }
         launchBusy {
-            val token = try { Sso.parseCallback(uri.toString(), st.sigBase, st.passport) }
+            val res = try { Sso.parseCallbackFull(uri.toString(), st.sigBase, st.passport) }
                 catch (e: ApiError) { if (repo.noteSsoFailure() >= 3) repo.clearSso(); throw e }
             repo.clearSso()
-            finishLogin(st.base, token)
+            finishLogin(st.base, res.token, res.privateToken)
         }
     }
 
     fun loginToken(rawUrl: String, token: String) = launchBusy { finishLogin(MoodleApi.normalizeBase(rawUrl), token.trim()) }
     fun loginPassword(rawUrl: String, user: String, pass: String) = launchBusy {
         val base = MoodleApi.normalizeBase(rawUrl)
-        finishLogin(base, MoodleApi.requestToken(base, user.trim(), pass))
+        val r = MoodleApi.requestTokens(base, user.trim(), pass)
+        finishLogin(base, r.token, r.privateToken)
     }
 
     // ---------- data ----------
@@ -191,6 +192,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val ctx = getApplication<Application>()
         if (!repo.isDownloaded(c.id, i.id, f)) { _message.value = "File belum diunduh"; return }
         val file = repo.fileOf(c.id, i.id, f)
+        if (FileKind.of(f.name, f.mime) == FileKind.VIDEO) { _playing.value = file; return }   // putar di dalam aplikasi
         val uri = try { FileProvider.getUriForFile(ctx, "${ctx.packageName}.files", file) } catch (e: IllegalArgumentException) { _message.value = "File tidak bisa dibuka"; return }
         val mime = f.mime ?: MimeTypeMap.getSingleton().getMimeTypeFromExtension(file.extension.lowercase()) ?: "*/*"
         try {
@@ -266,6 +268,22 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun versionName(): String = runCatching { getApplication<Application>().packageManager.getPackageInfo(getApplication<Application>().packageName, 0).versionName }.getOrNull() ?: "?"
     fun hasCrash(): Boolean = CrashLog.last(getApplication()) != null
     fun clearCrash() = CrashLog.clear(getApplication())
+
+    /** Video yang sedang diputar di dalam aplikasi (file unduhan lokal); null = tidak ada. */
+    private val _playing = MutableStateFlow<java.io.File?>(null)
+    val playing: StateFlow<java.io.File?> = _playing
+    fun stopPlaying() { _playing.value = null }
+
+    /** Buka halaman Moodle (tes, tugas, forum, dll.) sudah login lewat kunci autologin; bila tak bisa, buka URL biasa. */
+    fun openMoodle(url: String) {
+        val site = repo.site.value
+        if (site == null) { openLink(url); return }
+        viewModelScope.launch {
+            val target = withContext(Dispatchers.IO) { MoodleApi.autologinUrl(site, url) } ?: url
+            if (target == url) _message.value = "Membuka tanpa login otomatis; masuk ulang bila diminta"
+            openWeb(target)
+        }
+    }
 
     fun openLink(url: String) {
         val ctx = getApplication<Application>()

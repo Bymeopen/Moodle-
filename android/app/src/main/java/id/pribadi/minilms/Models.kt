@@ -15,7 +15,11 @@ data class Item(
     val dueAt: Long?,        // epoch detik
     val maxGrade: Double?,
     val files: List<FileRef>,
-)
+    val url: String = "",        // halaman modul di Moodle (untuk "Buka di Moodle"/auto-login)
+) {
+    /** Tugas atau tes: punya tenggat dan dihitung di Tenggat/pengingat. */
+    val isTask get() = type == "assignment" || type == "quiz"
+}
 
 data class Grade(val name: String, val grade: Double?, val max: Double?)
 
@@ -24,7 +28,7 @@ data class Course(val id: Long, val name: String, val summary: String, val items
 /** Hasil satu kali sinkron; disimpan sebagai JSON agar bisa dibuka offline. */
 data class Snapshot(val syncedAt: Long, val courses: List<Course>, val warnings: List<String>)
 
-data class Site(val url: String, val token: String, val userId: Long, val fullName: String, val siteName: String)
+data class Site(val url: String, val token: String, val userId: Long, val fullName: String, val siteName: String, val privateToken: String = "")
 
 // ---------- JSON ----------
 private fun JSONObject.optDoubleOrNull(k: String): Double? = if (isNull(k) || !has(k)) null else getDouble(k)
@@ -35,9 +39,9 @@ fun FileRef.toJson() = JSONObject().put("name", name).put("path", path).put("url
 fun JSONObject.toFileRef() = FileRef(getString("name"), getString("path"), getString("url"), getLong("size"), optString("mime").ifEmpty { null }.takeIf { !isNull("mime") }, getLong("modified"))
 
 fun Item.toJson() = JSONObject().put("id", id).put("type", type).put("title", title).put("section", section).put("content", content)
-    .put("dueAt", dueAt ?: JSONObject.NULL).put("maxGrade", maxGrade ?: JSONObject.NULL).put("files", JSONArray(files.map { it.toJson() }))
+    .put("dueAt", dueAt ?: JSONObject.NULL).put("maxGrade", maxGrade ?: JSONObject.NULL).put("files", JSONArray(files.map { it.toJson() })).put("url", url)
 fun JSONObject.toItem() = Item(getLong("id"), getString("type"), getString("title"), getString("section"), getString("content"),
-    optLongOrNull("dueAt"), optDoubleOrNull("maxGrade"), getJSONArray("files").mapObjects { it.toFileRef() })
+    optLongOrNull("dueAt"), optDoubleOrNull("maxGrade"), getJSONArray("files").mapObjects { it.toFileRef() }, optString("url"))
 
 fun Grade.toJson() = JSONObject().put("name", name).put("grade", grade ?: JSONObject.NULL).put("max", max ?: JSONObject.NULL)
 fun JSONObject.toGrade() = Grade(getString("name"), optDoubleOrNull("grade"), optDoubleOrNull("max"))
@@ -51,5 +55,5 @@ fun Snapshot.toJson() = JSONObject().put("syncedAt", syncedAt).put("courses", JS
 fun JSONObject.toSnapshot() = Snapshot(getLong("syncedAt"), getJSONArray("courses").mapObjects { it.toCourse() },
     getJSONArray("warnings").let { a -> (0 until a.length()).map { a.getString(it) } })
 
-fun Site.toJson() = JSONObject().put("url", url).put("token", token).put("userId", userId).put("fullName", fullName).put("siteName", siteName)
-fun JSONObject.toSite() = Site(getString("url"), getString("token"), getLong("userId"), getString("fullName"), getString("siteName"))
+fun Site.toJson() = JSONObject().put("url", url).put("token", token).put("userId", userId).put("fullName", fullName).put("siteName", siteName).put("privateToken", privateToken)
+fun JSONObject.toSite() = Site(getString("url"), getString("token"), getLong("userId"), getString("fullName"), getString("siteName"), optString("privateToken"))

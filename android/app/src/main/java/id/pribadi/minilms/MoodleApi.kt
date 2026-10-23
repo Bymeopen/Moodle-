@@ -63,7 +63,12 @@ object Sso {
      * signature harus md5(urlSitus + passport): mengikat token ke permintaan yang kita mulai, sehingga tautan
      * moodlemobile:// sembarangan (dari aplikasi/halaman lain) tidak bisa menyuntikkan token.
      */
-    fun parseCallback(callback: String, base: String, passport: String): String {
+    data class Result(val token: String, val privateToken: String)
+
+    fun parseCallback(callback: String, base: String, passport: String): String = parseCallbackFull(callback, base, passport).token
+
+    /** Sama seperti [parseCallback] tetapi juga mengembalikan private token (bagian ke-3 callback) untuk login otomatis ke halaman Moodle. */
+    fun parseCallbackFull(callback: String, base: String, passport: String): Result {
         val raw = callback.substringAfter("token=", "").substringBefore('&')
         // hanya %XX yang didekode; URLDecoder akan mengubah '+' (karakter sah base64) menjadi spasi dan merusak token
         val b64 = Regex("%([0-9A-Fa-f]{2})").replace(raw) { it.groupValues[1].toInt(16).toChar().toString() }
@@ -71,7 +76,7 @@ object Sso {
         val parts = try { String(Base64.getMimeDecoder().decode(b64)).split(":::") } catch (e: IllegalArgumentException) { throw ApiError("Token login rusak") }
         if (parts.size < 2 || parts[1].isEmpty()) throw ApiError("Format token tidak dikenali")
         if (parts[0] != md5(base + passport)) throw ApiError("Tanda tangan login tidak cocok; ulangi login dari aplikasi ini")
-        return parts[1]
+        return Result(parts[1], parts.getOrNull(2).orEmpty())
     }
 }
 
@@ -124,9 +129,11 @@ object MoodleApi {
     }
     var allowHttpForTests = false
 
-    fun requestToken(base: String, username: String, password: String): String {
+    fun requestToken(base: String, username: String, password: String): String = requestTokens(base, username, password).token
+
+    fun requestTokens(base: String, username: String, password: String): Sso.Result {
         val out = JSONObject(transport.post("$base/login/token.php", mapOf("username" to username, "password" to password, "service" to "moodle_mobile_app")))
-        if (out.has("token")) return out.getString("token")
+        if (out.has("token")) return Sso.Result(out.getString("token"), out.optString("privatetoken"))
         throw ApiError(out.optString("error", "Gagal login ke Moodle"))
     }
 
@@ -151,9 +158,27 @@ object MoodleApi {
         return v
     }
 
-    fun siteInfo(base: String, token: String): Site {
+    fun siteInfo(base: String, token: String, privateToken: String = ""): Site {
         val i = call(base, token, "core_webservice_get_site_info") as JSONObject
-        return Site(base, token, i.getLong("userid"), i.optString("fullname"), i.optString("sitename"))
+        return Site(base, token, i.getLong("userid"), i.optString("fullname"), i.optString("sitename"), privateToken)
+    }
+
+    /**
+     * URL yang membuka halaman Moodle [target] dalam keadaan sudah login (kunci sekali pakai dari tool_mobile_get_autologin_key, seperti aplikasi resmi).
+     * Hanya untuk halaman di host Moodle yang sama; null bila tidak bisa (tanpa private token, host lain, kunci diminta terlalu sering) agar pemanggil memakai URL biasa.
+     */
+    fun autologinUrl(site: Site, target: String): String? {
+        if (site.privateToken.isEmpty()) return null
+        val t = try { java.net.URL(target) } catch (e: Exception) { return null }
+        val s = java.net.URL(site.url)
+        if (t.protocol != "https" || t.host != s.host || t.port != s.port) return null
+        return try {
+            val r = call(site.url, site.token, "tool_mobile_get_autologin_key", mapOf("privatetoken" to site.privateToken)) as JSONObject
+            val key = r.optString("key").takeIf { it.isNotEmpty() } ?: return null
+            val base = r.optString("autologinurl").ifEmpty { "${site.url}/admin/tool/mobile/autologin.php" }
+            if (java.net.URL(base).host != s.host) null                       // jangan kirim kunci ke host lain
+            else "$base?userid=${site.userId}&key=${java.net.URLEncoder.encode(key, "UTF-8")}&urlto=${java.net.URLEncoder.encode(target, "UTF-8")}"
+        } catch (e: ApiError) { null } catch (e: org.json.JSONException) { null } catch (e: ClassCastException) { null }
     }
 
     private val EPOCH_NONE = 0L
@@ -181,7 +206,8 @@ object MoodleApi {
         val ids = (0 until enrolled.length()).map { enrolled.getJSONObject(it).getLong("id") }
         val assignByCm = hashMapOf<Long, JSONObject>()
         val pageByCm = hashMapOf<Long, String>()
-        var assignFailed = false; var pagesFailed = false
+        var assignFailed = false; var pagesFailed = false; var quizFailed = false
+        val quizByCm = hashMapOf<Long, JSONObject>()
         if (ids.isNotEmpty()) {
             assignFailed = attempt(warnings, "Tugas") {
                 val cs = (call("mod_assign_get_assignments", mapOf("courseids" to ids)) as JSONObject).optJSONArray("courses") ?: JSONArray()
@@ -189,6 +215,10 @@ object MoodleApi {
                     val l = cs.getJSONObject(i).optJSONArray("assignments") ?: continue      // kursus tanpa tugas tidak punya kunci ini
                     for (j in 0 until l.length()) l.getJSONObject(j).let { assignByCm[it.getLong("cmid")] = it }
                 }
+            } == null
+            quizFailed = attempt(warnings, "Tes") {
+                val q = (call("mod_quiz_get_quizzes_by_courses", mapOf("courseids" to ids)) as JSONObject).optJSONArray("quizzes") ?: JSONArray()
+                for (i in 0 until q.length()) q.getJSONObject(i).let { quizByCm[it.getLong("coursemodule")] = it }
             } == null
             pagesFailed = attempt(warnings, "Halaman") {
                 val p = (call("mod_page_get_pages_by_courses", mapOf("courseids" to ids)) as JSONObject).optJSONArray("pages") ?: JSONArray()
@@ -216,24 +246,36 @@ object MoodleApi {
                         (0 until arr.length()).map { arr.getJSONObject(it) }.filter { it.optString("type") == "file" && it.has("fileurl") }
                             .map { FileRef(it.optString("filename"), it.optString("filepath", "/"), it.getString("fileurl"), it.optLong("filesize"), it.optString("mimetype").ifEmpty { null }, it.optLong("timemodified")) }
                     }
+                    val pageUrl = m.optString("url")
                     when {
                         mod == "assign" && assignByCm.containsKey(id) -> {
                             val a = assignByCm.getValue(id)
                             items += Item(id, "assignment", name, sname, htmlToText(a.optString("intro")), a.optLong("duedate").takeIf { it > EPOCH_NONE },
-                                a.optDouble("grade").takeIf { it > 0 } ?: 100.0, emptyList())
+                                a.optDouble("grade").takeIf { it > 0 } ?: 100.0, emptyList(), pageUrl)
                         }
-                        mod == "page" -> items += Item(id, "page", name, sname, htmlToText(pageByCm[id] ?: m.optString("description")), null, null, emptyList())
+                        mod == "quiz" && quizByCm.containsKey(id) -> {
+                            val q = quizByCm.getValue(id)
+                            val info = buildList {
+                                q.optLong("timelimit").takeIf { it > 0 }?.let { add("Durasi ${it / 60} menit") }
+                                add(q.optInt("attempts").let { if (it > 0) "Percobaan maks $it" else "Percobaan tak terbatas" })
+                                q.optLong("timeopen").takeIf { it > 0 }?.let { add("Dibuka ${java.time.Instant.ofEpochSecond(it).atZone(java.time.ZoneId.systemDefault()).toLocalDateTime().toString().replace('T', ' ')}") }
+                            }.joinToString(" · ")
+                            val intro = htmlToText(q.optString("intro"))
+                            items += Item(id, "quiz", name, sname, if (intro.isEmpty()) info else "$intro\n$info", q.optLong("timeclose").takeIf { it > EPOCH_NONE },
+                                q.optDouble("grade").takeIf { it > 0 } ?: 100.0, emptyList(), pageUrl)
+                        }
+                        mod == "page" -> items += Item(id, "page", name, sname, htmlToText(pageByCm[id] ?: m.optString("description")), null, null, emptyList(), pageUrl)
                         mod == "label" -> htmlToText(m.optString("description")).takeIf { it.isNotEmpty() }?.let { t -> items += Item(id, "page", t.take(60), sname, t, null, null, emptyList()) }
                         else -> {
                             // resource/folder/url/forum/quiz/dll: tautan ke Moodle + file yang bisa diunduh
                             val link = if (mod == "url") m.optJSONArray("contents")?.optJSONObject(0)?.optString("fileurl") ?: m.optString("url") else m.optString("url")
-                            if (!link.isNullOrEmpty() || files.isNotEmpty()) items += Item(id, "link", name, sname, link ?: "", null, null, files)
+                            if (!link.isNullOrEmpty() || files.isNotEmpty()) items += Item(id, "link", name, sname, link ?: "", null, null, files, pageUrl)
                         }
                     }
                 }
             }
             // item gagal diambil sebagian -> pakai item lama kursus ini supaya materi/tenggat/file offline tidak hilang
-            val degraded = sections == null || assignFailed || pagesFailed
+            val degraded = sections == null || assignFailed || pagesFailed || quizFailed
             val keptItems = if (degraded && prev != null) prev.items else items
 
             val gradeData = attempt(warnings, "Nilai $short") { call("gradereport_user_get_grade_items", mapOf("courseid" to cid, "userid" to site.userId)) as JSONObject }

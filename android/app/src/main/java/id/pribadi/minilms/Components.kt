@@ -133,6 +133,7 @@ fun FileTile(kind: FileKind, size: Dp = 40.dp) {
         FileKind.PDF -> Icons.Rounded.PictureAsPdf to Color(0xFFD64545); FileKind.DOC -> Icons.Rounded.Description to Color(0xFF2F6FE4)
         FileKind.PPT -> Icons.Rounded.Slideshow to Color(0xFFE8710C); FileKind.XLS -> Icons.Rounded.TableChart to Color(0xFF1E9E5A)
         FileKind.IMG -> Icons.Rounded.Image to Color(0xFF8E5BD6); FileKind.ZIP -> Icons.Rounded.FolderZip to Color(0xFF7A6F66)
+        FileKind.VIDEO -> Icons.Rounded.Movie to Color(0xFFC2185B); FileKind.AUDIO -> Icons.Rounded.AudioFile to Color(0xFF00897B)
         FileKind.OTHER -> Icons.Rounded.InsertDriveFile to Color(0xFF7A6F66)
     }
     Box(Modifier.size(size).clip(RoundedCornerShape(12.dp)).background(color.copy(alpha = 0.14f)), contentAlignment = Alignment.Center) {
