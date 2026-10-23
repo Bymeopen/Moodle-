@@ -122,7 +122,9 @@ export async function fetchAll(client) {
         } else {
           // url/resource/folder/forum/quiz/dll: tautan kembali ke Moodle (file butuh sesi login kampus)
           const link = m.modname === 'url' ? m.contents?.[0]?.fileurl ?? m.url : m.url;
-          if (link) items.push({ ext, type: 'link', title: prefix + m.name, content: link });
+          const files = (m.contents ?? []).filter((f) => f.type === 'file' && f.fileurl)
+            .map((f) => ({ name: f.filename, path: f.filepath ?? '/', url: f.fileurl, size: f.filesize ?? null, mime: f.mimetype ?? null, modified: f.timemodified ?? null }));
+          if (link) items.push({ ext, type: 'link', title: prefix + m.name, content: link, files });
         }
       }
     }
@@ -133,4 +135,39 @@ export async function fetchAll(client) {
     courses.push({ ext: String(c.id), title: c.fullname, summary: htmlToText(c.summary), items, grades });
   }
   return { site: { userid: site.userid, name: site.fullname, sitename: site.sitename }, courses, warnings };
+}
+
+// ---------- unduh file ----------
+/** Nama aman untuk disk: buang karakter berbahaya, titik di awal, dan panjang berlebih. */
+export const safeName = (n) => String(n).normalize('NFC').replace(/[^\p{L}\p{N}._ ()-]+/gu, '_').replace(/^\.+/, '_').trim().slice(0, 120) || '_';
+
+/**
+ * Unduh satu file Moodle ke `dest`. Token dikirim lewat POST body (bukan URL, agar tidak masuk log)
+ * dan HANYA ke origin Moodle yang sama. Batas ukuran ditegakkan saat streaming.
+ */
+export async function downloadFile(base, token, fileUrl, dest, maxBytes) {
+  const { createWriteStream } = await import('node:fs');
+  const { mkdir, rm } = await import('node:fs/promises');
+  const { dirname } = await import('node:path');
+  const { Readable } = await import('node:stream');
+  const { pipeline } = await import('node:stream/promises');
+  if (new URL(fileUrl).origin !== new URL(base).origin) throw new MoodleError('File berasal dari host lain; dilewati');
+  const res = await fetch(fileUrl, { method: 'POST', body: new URLSearchParams({ token }), redirect: 'manual', signal: AbortSignal.timeout(120_000) })
+    .catch((e) => { throw new MoodleError(`Gagal menghubungi Moodle: ${e.cause?.code ?? e.message}`); });
+  if (!res.ok || !res.body) throw new MoodleError(`HTTP ${res.status}`);
+  if (/application\/json/.test(res.headers.get('content-type') ?? '')) throw new MoodleError('Moodle menolak akses file (token/izin)');
+  const declared = Number(res.headers.get('content-length'));
+  if (declared > maxBytes) throw new MoodleError(`File ${Math.round(declared / 1e6)} MB melebihi batas`);
+  await mkdir(dirname(dest), { recursive: true });
+  let seen = 0;
+  try {
+    await pipeline(Readable.fromWeb(res.body), async function* (src) {
+      for await (const chunk of src) {
+        seen += chunk.length;
+        if (seen > maxBytes) throw new MoodleError('File melebihi batas ukuran');
+        yield chunk;
+      }
+    }, createWriteStream(dest));
+  } catch (e) { await rm(dest, { force: true }); throw e; }
+  return seen;
 }

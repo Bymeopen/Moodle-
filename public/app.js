@@ -41,6 +41,15 @@ const form = (fields, submitLabel, onSubmit) => {
 };
 const show = (...nodes) => $app.replaceChildren(...nodes.flat().filter((n) => n != null && n !== false));
 
+// unduh file via fetch (butuh header Authorization, jadi tidak bisa pakai <a href> biasa)
+async function saveFile(id, name) {
+  const res = await fetch(`/api/files/${id}`, { headers: { authorization: `Bearer ${token}` } });
+  if (!res.ok) throw new Error((await res.json()).error || 'Gagal mengunduh');
+  const a = h('a', { href: URL.createObjectURL(await res.blob()), download: name });
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
 // ---------- nav & auth ----------
 function renderNav() {
   $nav.replaceChildren(...(me ? [
@@ -112,6 +121,11 @@ function itemCard(it, manage) {
   const body = [];
   const reload = () => route();
   if (it.type === 'page') body.push(h('p', { style: 'white-space:pre-wrap' }, it.content));
+  if (it.files?.length) {
+    body.push(h('div', {}, it.files.map((f) => h('div', { className: 'row' },
+      h('span', {}, `📄 ${f.name}`), f.size != null && h('span', { className: 'muted' }, `${(f.size / 1024).toFixed(0)} KB`),
+      f.downloaded ? h('button', { className: 'ghost', onclick: () => saveFile(f.id, f.name).catch((e) => alert(e.message)) }, 'Simpan') : h('span', { className: 'muted' }, 'belum diunduh')))));
+  }
   if (it.type === 'link') body.push(h('a', { href: /^https?:\/\//.test(it.content) ? it.content : '#', target: '_blank', rel: 'noopener' }, it.content));
   if (it.type === 'assignment') {
     body.push(h('p', { style: 'white-space:pre-wrap' }, it.content), h('div', { className: 'muted' }, `Nilai maks ${it.max_grade}${it.due_at ? ` · tenggat ${it.due_at}` : ''}`));
@@ -296,8 +310,13 @@ async function moodleView() {
           h('button', { onclick: guard(async () => {
             msg.textContent = 'Menarik mata kuliah, materi, tugas, dan nilai…';
             const r = await api('POST', '/moodle/sync');
-            msg.textContent = `Selesai: ${r.courses} kursus, ${r.items} item, ${r.grades} nilai.${r.warnings.length ? ` Peringatan: ${r.warnings.join('; ')}` : ''}`;
+            msg.textContent = `Selesai: ${r.courses} kursus, ${r.items} item, ${r.files} file, ${r.grades} nilai.${r.warnings.length ? ` Peringatan: ${r.warnings.join('; ')}` : ''}`;
           }) }, 'Sinkron sekarang'),
+          h('button', { className: 'ghost', onclick: guard(async () => {
+            msg.textContent = 'Mengunduh file materi… (bisa beberapa menit)';
+            const r = await api('POST', '/moodle/download', {});
+            msg.textContent = `Unduh: ${r.downloaded} berhasil, ${r.skipped} dilewati, ${r.failed} gagal (${(r.bytes / 1048576).toFixed(1)} MB). Tersimpan di: ${r.dir}${r.errors.length ? ` — ${r.errors.slice(0, 5).join('; ')}` : ''}`;
+          }) }, 'Unduh semua file'),
           h('button', { className: 'ghost', onclick: guard(async () => { await api('DELETE', '/moodle'); route(); }) }, 'Putuskan')),
         msg, err),
       h('p', { className: 'muted' }, 'Data hasil impor bersifat baca-saja. Materi bisa dipakai untuk kartu hafalan dan tutor AI; tugas dikumpulkan di Moodle kampus.'));

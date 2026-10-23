@@ -30,7 +30,8 @@ Impor read-only lewat Moodle Web Service resmi: mata kuliah, materi (halaman, ta
 - Syarat: kampus mengaktifkan layanan `moodle_mobile_app`. Jika `login/token.php` menolak, minta admin kampus atau pakai token manual.
 - Token disimpan **plaintext** di `data/lms.db`: jaga file itu (`chmod 600`) dan cabut token di Moodle bila perlu.
 - Keamanan: hanya `https://`, alamat jaringan internal diblokir (anti-SSRF), redirect tidak diikuti. `MOODLE_ALLOW_PRIVATE=true` hanya untuk dev/test.
-- Tidak diimpor: isi file (PDF/slide; butuh sesi login kampus, hanya tautan), kuis, forum, pengumpulan tugas. Kumpulkan tugas tetap di Moodle.
+- File materi (PDF, slide, dll.): sinkron mencatat daftar file; tombol **Unduh semua file** menyimpannya ke `data/files/<user>/<kursus>/<item>/` (ubah dengan `FILES_DIR`; batas per file `MOODLE_MAX_FILE_MB`, default 200). Token dikirim lewat POST body hanya ke host Moodle yang sama; nama file disanitasi (anti path traversal). File yang berubah di Moodle diunduh ulang setelah sinkron.
+- Tidak diimpor: kuis, forum, lampiran dalam tugas, pengumpulan tugas. Kumpulkan tugas tetap di Moodle.
 - SSO kampus (SAML/OAuth) untuk login ke Mini LMS tidak termasuk; butuh pendaftaran aplikasi oleh admin kampus.
 
 ## Belum ada (dibanding Moodle)

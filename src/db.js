@@ -84,6 +84,15 @@ export function openDb(file = process.env.DB_FILE || 'data/lms.db') {
       name TEXT NOT NULL, grade REAL, max REAL,
       PRIMARY KEY (course_id, user_id, name)
     );
+    -- file materi dari Moodle: metadata dari sinkron, isi diunduh terpisah ke disk lokal
+    CREATE TABLE IF NOT EXISTS item_files (
+      id INTEGER PRIMARY KEY,
+      item_id INTEGER NOT NULL REFERENCES items(id) ON DELETE CASCADE,
+      name TEXT NOT NULL, path TEXT NOT NULL DEFAULT '/', url TEXT NOT NULL,
+      size INTEGER, mime TEXT, modified INTEGER,
+      local_path TEXT, downloaded_at TEXT,
+      UNIQUE (item_id, url)
+    );
   `);
   // migrasi untuk DB lama: kolom external_id penanda data hasil impor (agar sinkron ulang = upsert)
   for (const t of ['courses', 'items']) {

@@ -2,7 +2,9 @@ import express from 'express';
 import { hashPassword, verifyPassword, issueToken, readToken } from './auth.js';
 import { createAi } from './ai.js';
 import { review, ratings, toDay, addDays } from './srs.js';
-import { MoodleClient, MoodleError, normalizeBaseUrl, requestToken, fetchAll } from './moodle.js';
+import { MoodleClient, MoodleError, normalizeBaseUrl, requestToken, fetchAll, downloadFile, safeName } from './moodle.js';
+import { resolve, join, sep } from 'node:path';
+import { existsSync } from 'node:fs';
 
 class HttpError extends Error {
   constructor(status, message) { super(message); this.status = status; }
@@ -117,6 +119,8 @@ export function createApp(db, { ai = createAi() } = {}) {
       if (!manage && it.type === 'quiz') {
         out.best_score = q('SELECT MAX(score) AS s FROM attempts WHERE item_id = ? AND user_id = ?').get(it.id, req.user.id).s;
       }
+      out.files = q('SELECT id, name, size, local_path IS NOT NULL AS downloaded FROM item_files WHERE item_id = ? ORDER BY id').all(it.id)
+        .map((f) => ({ ...f, downloaded: !!f.downloaded }));
       out.external = !!it.external_id;
       delete out.external_id;
       out.completed = !!q('SELECT 1 FROM completions WHERE item_id = ? AND user_id = ?').get(it.id, req.user.id);
@@ -333,7 +337,7 @@ export function createApp(db, { ai = createAi() } = {}) {
     const conn = getConn(req.user.id) ?? fail(400, 'Belum terhubung ke Moodle');
     const data = await fetchAll(new MoodleClient(conn.url, conn.token));
     const uid = req.user.id;
-    const stats = { courses: 0, items: 0, grades: 0 };
+    const stats = { courses: 0, items: 0, grades: 0, files: 0 };
     db.exec('BEGIN');
     try {
       for (const c of data.courses) {
@@ -353,6 +357,17 @@ export function createApp(db, { ai = createAi() } = {}) {
              max_grade = excluded.max_grade, due_at = excluded.due_at, position = excluded.position`)
             .run(cid, it.type, it.title, it.content ?? '', it.max_grade ?? 100, it.due_at ?? null, i + 1, it.ext);
           stats.items += 1;
+          if (it.files?.length) {
+            const itemId = q('SELECT id FROM items WHERE course_id = ? AND external_id = ?').get(cid, it.ext).id;
+            for (const f of it.files) {
+              // file yang berubah di Moodle (modified lebih baru) ditandai belum diunduh agar diunduh ulang
+              q(`INSERT INTO item_files (item_id, name, path, url, size, mime, modified) VALUES (?,?,?,?,?,?,?)
+                 ON CONFLICT (item_id, url) DO UPDATE SET name = excluded.name, path = excluded.path, size = excluded.size, mime = excluded.mime,
+                 local_path = CASE WHEN item_files.modified IS excluded.modified THEN item_files.local_path ELSE NULL END,
+                 modified = excluded.modified`).run(itemId, f.name, f.path, f.url, f.size, f.mime, f.modified);
+              stats.files += 1;
+            }
+          }
         });
         q('DELETE FROM external_grades WHERE course_id = ? AND user_id = ?').run(cid, uid);
         const ins = q('INSERT OR REPLACE INTO external_grades (course_id, user_id, name, grade, max) VALUES (?,?,?,?,?)');
@@ -362,6 +377,43 @@ export function createApp(db, { ai = createAi() } = {}) {
       db.exec('COMMIT');
     } catch (e) { db.exec('ROLLBACK'); throw e; }
     res.json({ ...stats, warnings: data.warnings });
+  }));
+
+  // Unduh semua file materi (atau satu kursus: {course_id}) ke disk server ini. Cocok untuk server lokal pribadi.
+  const FILES_DIR = resolve(process.env.FILES_DIR || 'data/files');
+  const MAX_FILE_BYTES = (Number(process.env.MOODLE_MAX_FILE_MB) || 200) * 1024 * 1024;
+  app.post('/api/moodle/download', auth, moodleRoute(async (req, res) => {
+    const conn = getConn(req.user.id) ?? fail(400, 'Belum terhubung ke Moodle');
+    const courseId = Number(req.body?.course_id) || null;
+    const rows = q(`SELECT f.id, f.name, f.path, f.url, f.size, i.title AS item, c.id AS cid, c.title AS course
+                    FROM item_files f JOIN items i ON i.id = f.item_id JOIN courses c ON c.id = i.course_id
+                    WHERE c.teacher_id = ? AND c.external_id IS NOT NULL AND f.local_path IS NULL AND (? IS NULL OR c.id = ?)`).all(req.user.id, courseId, courseId);
+    const root = join(FILES_DIR, String(req.user.id));
+    const out = { downloaded: 0, skipped: 0, failed: 0, bytes: 0, dir: root, errors: [] };
+    for (const f of rows) {
+      // struktur: <kursus>/<item>/<subfolder Moodle>/<nama file>; tiap segmen disanitasi
+      const parts = [`${f.cid}-${safeName(f.course)}`, safeName(f.item), ...f.path.split('/').filter(Boolean).map(safeName), safeName(f.name)];
+      const dest = resolve(root, ...parts);
+      if (!dest.startsWith(root + sep)) { out.failed += 1; out.errors.push(`${f.name}: path tidak aman`); continue; }
+      if (f.size > MAX_FILE_BYTES) { out.skipped += 1; out.errors.push(`${f.name}: ${Math.round(f.size / 1e6)} MB melebihi batas`); continue; }
+      try {
+        out.bytes += await downloadFile(conn.url, conn.token, f.url, dest, MAX_FILE_BYTES);
+        q('UPDATE item_files SET local_path = ?, downloaded_at = ? WHERE id = ?').run(dest, new Date().toISOString(), f.id);
+        out.downloaded += 1;
+      } catch (e) {
+        if (!(e instanceof MoodleError)) throw e;
+        out.failed += 1; out.errors.push(`${f.name}: ${e.message}`);
+      }
+    }
+    res.json(out);
+  }));
+
+  // kirim file yang sudah diunduh ke browser (hanya pemilik kursus)
+  app.get('/api/files/:id', auth, route((req, res) => {
+    const f = q(`SELECT f.name, f.local_path FROM item_files f JOIN items i ON i.id = f.item_id JOIN courses c ON c.id = i.course_id
+                 WHERE f.id = ? AND c.teacher_id = ?`).get(req.params.id, req.user.id) ?? fail(404, 'File tidak ditemukan');
+    if (!f.local_path || !existsSync(f.local_path) || !f.local_path.startsWith(FILES_DIR + sep)) fail(404, 'File belum diunduh');
+    res.download(f.local_path, f.name);
   }));
 
   app.get('/api/courses/:id/external-grades', auth, route((req, res) => {
