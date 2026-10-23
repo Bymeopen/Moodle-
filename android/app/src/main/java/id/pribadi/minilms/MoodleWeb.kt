@@ -39,7 +39,7 @@ object WebPolicy {
  */
 @SuppressLint("SetJavaScriptEnabled")
 @Composable
-fun MoodleWebScreen(url: String, onClose: () -> Unit, onExternal: (String) -> Unit, onSessionExpired: () -> Unit = {}) {
+fun MoodleWebScreen(url: String, launchUrl: String?, onLaunched: () -> Unit, onClose: () -> Unit, onExternal: (String) -> Unit, onSessionExpired: () -> Unit = {}) {
     val startHost = remember(url) { WebPolicy.hostOf(url) }
     var title by remember { mutableStateOf("") }
     var progress by remember { mutableIntStateOf(0) }
@@ -56,7 +56,7 @@ fun MoodleWebScreen(url: String, onClose: () -> Unit, onExternal: (String) -> Un
             IconButton(onClose) { Icon(Icons.Rounded.Close, "Tutup") }
             Text(title.ifBlank { startHost.orEmpty() }, Modifier.weight(1f), style = MaterialTheme.typography.titleSmall, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
             IconButton({ web?.reload() }) { Icon(Icons.Rounded.Refresh, "Muat ulang") }
-            IconButton({ onExternal(web?.url ?: url) }) { Icon(Icons.Rounded.OpenInNew, "Buka di browser") }
+            IconButton({ onExternal(web?.url?.takeUnless { it.contains("autologin.php") } ?: url) }) { Icon(Icons.Rounded.OpenInNew, "Buka di browser") }
         }
         if (expired) InfoBanner("Sesi Moodle berakhir.", Modifier.padding(horizontal = 12.dp), tone = Tone.WARN, icon = Icons.Rounded.Lock, action = "Masuk otomatis", onAction = onSessionExpired)
         if (progress in 1..99) ProgressBar(progress / 100f, Modifier.fillMaxWidth().height(3.dp))
@@ -88,7 +88,7 @@ fun MoodleWebScreen(url: String, onClose: () -> Unit, onExternal: (String) -> Un
                         }
                         setDownloadListener { dl, _, _, _, _ -> onExternal(dl) }        // unduhan file: lewat browser/pengunduh sistem
                         web = this
-                        loadUrl(url)
+                        loadUrl(launchUrl ?: url); if (launchUrl != null) onLaunched()      // kunci sekali pakai tidak dimuat ulang saat rotasi
                     }
                 },
                 modifier = Modifier.fillMaxSize(),

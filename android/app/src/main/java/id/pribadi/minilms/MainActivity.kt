@@ -122,7 +122,7 @@ fun MainScreen(vm: MainViewModel) {
     if (needReauth) AlertDialog(vm::dismissReauth, title = { Text("Aktifkan login otomatis") },
         text = { Text("Agar tes, forum, dan video terbuka langsung di aplikasi tanpa meminta login lagi, masuk sekali lagi lewat Google kampus. Data dan unduhan Anda tidak hilang.") },
         confirmButton = { TextButton(vm::reauthorize) { Text("Masuk sekarang") } }, dismissButton = { TextButton(vm::dismissReauth) { Text("Nanti") } })
-    web?.let { u -> androidx.compose.ui.window.Dialog(vm::closeWeb, androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)) { Surface(Modifier.fillMaxSize()) { Column(Modifier.statusBarsPadding()) { MoodleWebScreen(u, vm::closeWeb, vm::openLink, vm::retryAutologin) } } } }
+    web?.let { t -> androidx.compose.ui.window.Dialog(vm::closeWeb, androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)) { Surface(Modifier.fillMaxSize()) { Column(Modifier.statusBarsPadding()) { MoodleWebScreen(t.url, t.launch, vm::consumeLaunch, vm::closeWeb, vm::openLink, vm::retryAutologin) } } } }
     BackHandler(enabled = overlay.isNotEmpty() || tab != 0) { if (overlay.isNotEmpty()) overlay = "" else tab = 0 }
 
     val course = if (overlay.startsWith("course:")) courses.firstOrNull { it.id == overlay.removePrefix("course:").toLongOrNull() } else null

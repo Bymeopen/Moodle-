@@ -133,7 +133,7 @@ object MoodleApi {
 
     fun requestTokens(base: String, username: String, password: String): Sso.Result {
         val out = JSONObject(transport.post("$base/login/token.php", mapOf("username" to username, "password" to password, "service" to "moodle_mobile_app")))
-        if (out.has("token")) return Sso.Result(out.getString("token"), out.optString("privatetoken"))
+        if (out.has("token")) return Sso.Result(out.getString("token"), out.optStr("privatetoken"))
         throw ApiError(out.optString("error", "Gagal login ke Moodle"))
     }
 
@@ -245,6 +245,7 @@ object MoodleApi {
         val pageByCm = hashMapOf<Long, String>()
         var assignFailed = false; var pagesFailed = false; var quizFailed = false
         val quizByCm = hashMapOf<Long, JSONObject>()
+        var reviewBudget = 5                       // maks panggilan tinjauan baru per sinkron (cegah N panggilan tiap sinkron bila dosen menutup tinjauan)
         val forumByCm = hashMapOf<Long, Long>()      // cmid -> id forum
         if (ids.isNotEmpty()) {
             assignFailed = attempt(warnings, "Tugas") {
@@ -307,15 +308,17 @@ object MoodleApi {
                             val tries = attempt(warnings, "Percobaan tes $name") {
                                 quizAttempts(call("mod_quiz_get_user_attempts", mapOf("quizid" to q.getLong("id"), "userid" to site.userId, "status" to "all")), q.optDouble("sumgrades"), quizMax)
                             } ?: prev?.items?.firstOrNull { it.id == id }?.attempts.orEmpty()
-                            val oldTries = prev?.items?.firstOrNull { it.id == id }?.attempts.orEmpty().associateBy { it.number }
+                            val oldTries = prev?.items?.firstOrNull { it.id == id }?.attempts.orEmpty().associateBy { it.id }
                             // Soal & jawaban percobaan selesai disimpan offline (hanya yang belum ada; gagal/ditutup dosen = dilewati).
                             val withReview = tries.map { a ->
                                 if (a.state != "finished" || a.id == 0L) a
-                                else a.copy(review = oldTries[a.number]?.review?.takeIf { it.isNotEmpty() } ?: quizReview(site, a.id))
+                                else a.copy(review = oldTries[a.id]?.review?.takeIf { it.isNotEmpty() } ?: if (reviewBudget > 0) { reviewBudget--; quizReview(site, a.id) } else "")
                             }
                             items += Item(id, "quiz", name, sname, if (intro.isEmpty()) info else "$intro\n$info", q.optLong("timeclose").takeIf { it > EPOCH_NONE },
                                 quizMax, emptyList(), pageUrl, withReview)
                         }
+                        mod == "quiz" && quizFailed && prev?.items?.any { it.id == id && it.type == "quiz" } == true ->      // daftar tes gagal: pertahankan hanya item tes lama
+                            items += prev.items.first { it.id == id && it.type == "quiz" }.copy(title = name, section = sname, url = pageUrl)
                         mod == "forum" && forumByCm.containsKey(id) -> {
                             val text = forumText(site, forumByCm.getValue(id)) ?: prev?.items?.firstOrNull { it.id == id }?.content.orEmpty()
                             items += Item(id, "forum", name, sname, text, null, null, emptyList(), pageUrl)
@@ -333,7 +336,7 @@ object MoodleApi {
                 }
             }
             // item gagal diambil sebagian -> pakai item lama kursus ini supaya materi/tenggat/file offline tidak hilang
-            val degraded = sections == null || assignFailed || pagesFailed || quizFailed
+            val degraded = sections == null || assignFailed || pagesFailed
             val keptItems = if (degraded && prev != null) prev.items else items
 
             val gradeData = attempt(warnings, "Nilai $short") { call("gradereport_user_get_grade_items", mapOf("courseid" to cid, "userid" to site.userId)) as JSONObject }

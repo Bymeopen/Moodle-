@@ -80,16 +80,17 @@ class Repo private constructor(ctx: Context) {
     /** Token dan private token (bisa membuat sesi web penuh) disimpan terenkripsi Keystore; bila Keystore gagal, jatuh ke penyimpanan privat aplikasi. */
     fun saveSite(s: Site) {
         val json = s.toJson().toString()
-        try { SecretStore.put(app, "site", json); prefs.edit().remove("site").apply() }
-        catch (e: Exception) { prefs.edit().putString("site", json).apply() }
+        // Teks biasa baru dihapus setelah versi terenkripsi terbukti bisa dibaca balik (Keystore bermasalah tidak boleh membuat pengguna ter-logout diam-diam).
+        val ok = try { SecretStore.put(app, "site", json, SITE_ALIAS); SecretStore.get(app, "site", SITE_ALIAS) == json } catch (e: Exception) { false }
+        if (ok) prefs.edit().remove("site").apply() else prefs.edit().putString("site", json).apply()
         _site.value = s
     }
 
     private fun loadSite(): Site? {
-        val enc = try { SecretStore.get(app, "site") } catch (e: Exception) { null }
+        val enc = try { SecretStore.get(app, "site", SITE_ALIAS) } catch (e: Exception) { null }
         val raw = enc ?: prefs.getString("site", null) ?: return null
         val site = runCatching { JSONObject(raw).toSite() }.getOrNull() ?: return null
-        if (enc == null) runCatching { SecretStore.put(app, "site", raw); prefs.edit().remove("site").apply() }      // migrasi dari versi lama
+        if (enc == null) runCatching { SecretStore.put(app, "site", raw, SITE_ALIAS); if (SecretStore.get(app, "site", SITE_ALIAS) == raw) prefs.edit().remove("site").apply() }      // migrasi dari versi lama
         return site
     }
 
@@ -236,6 +237,7 @@ class Repo private constructor(ctx: Context) {
     }
 
     companion object {
+        const val SITE_ALIAS = "minilms_site_key"          // alias Keystore terpisah dari kunci API AI agar reset satu kunci tidak menghapus yang lain
         /** Pesan galat bila [body] adalah JSON galat Moodle ({"exception":...} / {"errorcode":...}); null bila bukan. */
         fun moodleErrorIn(body: ByteArray): String? = try {
             val j = org.json.JSONObject(String(body))

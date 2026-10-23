@@ -199,3 +199,87 @@ class AuditV28Test {
         assertEquals("forum", it.type); assertEquals("• Diskusi lama", it.content)
     }
 }
+
+class AuditV29Test {
+    private val base = "https://lms.kampus.ac.id"
+
+    @Test fun doajHttpLinksAreUpgradedToHttps() {
+        val r = LibraryApi.parseDoaj("""{"results":[{"id":"a","bibjson":{"title":"T","link":[{"type":"fulltext","url":"http://jurnal.kampus.ac.id/a/1"}]}}]}""")
+        assertEquals("https://jurnal.kampus.ac.id/a/1", r.single().url)
+        var fetched = ""
+        assertEquals("https://x.id/z.pdf", PdfResolver.resolve("http://x.id/v/1") { fetched = it; """<meta name="citation_pdf_url" content="https://x.id/z.pdf">""" })
+        assertEquals("https://x.id/v/1", fetched)                      // halaman diambil lewat https
+    }
+
+    @Test fun luceneOperatorWordsAndDoajPathEncoding() {
+        assertEquals("a", LibraryApi.luceneSafe("NOT"))
+        assertEquals("a b", LibraryApi.luceneSafe("a OR b").replace("  ", " "))
+        var asked = ""
+        LibraryApi.http = HttpGet { asked = it; """{"results":[]}""" }
+        LibraryApi.search(LibSource.JOURNALS, "manajemen keuangan (x")
+        assertTrue(asked, asked.contains("/articles/manajemen%20keuangan%20x?"))
+    }
+
+    @Test fun cgnatBlocked() {
+        assertTrue(PublicHttp.blockedAddress(java.net.InetAddress.getByName("100.64.1.1")))
+        assertTrue(PublicHttp.blockedAddress(java.net.InetAddress.getByName("100.127.255.254")))
+        assertFalse(PublicHttp.blockedAddress(java.net.InetAddress.getByName("100.128.0.1")))
+    }
+
+    @Test fun nullPrivateTokenBecomesEmpty() {
+        assertEquals("", org.json.JSONObject("""{"privatetoken":null}""").optStr("privatetoken"))
+        assertEquals("abc", org.json.JSONObject("""{"privatetoken":"abc"}""").optStr("privatetoken"))
+        val site = org.json.JSONObject("""{"url":"$base","token":"t","userId":1,"fullName":"a","siteName":"b","privateToken":null}""").toSite()
+        assertEquals("", site.privateToken)
+    }
+
+    @Test fun textChunksHandlesCrlfAndLongParagraphs() {
+        assertEquals(listOf("a", "b"), textChunks("a\r\n\r\nb"))
+        val long = (1..1000).joinToString(" ") { "kata$it" }                     // satu paragraf tanpa baris kosong, ~7 KB
+        val parts = textChunks(long, 500)
+        assertTrue(parts.size >= 10 && parts.all { it.length <= 500 })
+        assertEquals(long.replace(" ", ""), parts.joinToString("").replace(" ", ""))   // tidak ada teks hilang
+        assertTrue(textChunks("  \n\n  ").isEmpty())
+    }
+
+    // ---- sinkron ----
+    private fun fakeSite(extra: (String) -> String?) {
+        MoodleApi.htmlToText = { it }
+        MoodleApi.transport = Transport { _, f -> extra(f["wsfunction"].orEmpty()) ?: when (f["wsfunction"]) {
+            "core_enrol_get_users_courses" -> """[{"id":11,"fullname":"Algo","shortname":"A"}]"""
+            "mod_assign_get_assignments" -> """{"courses":[]}"""; "mod_page_get_pages_by_courses" -> """{"pages":[]}"""
+            "gradereport_user_get_grade_items" -> """{"usergrades":[]}"""
+            else -> """{"exception":"x","message":"tidak ada"}""" } }
+    }
+
+    @Test fun quizListFailureDoesNotFreezeOtherItems() {
+        val oldQuiz = Item(6, "quiz", "Kuis", "M1", "lama", 99, 100.0, emptyList(), "u", listOf(QuizAttempt(1, "finished", 80.0, 100.0, 5, 9, "R")))
+        val prev = Snapshot(1, listOf(Course(11, "Algo", "", listOf(oldQuiz), emptyList())), emptyList())
+        fakeSite { fn -> when (fn) {
+            "core_course_get_contents" -> """[{"name":"M1","modules":[{"id":6,"modname":"quiz","name":"Kuis","url":"$base/q"},{"id":8,"modname":"url","name":"BARU","url":"$base/u","contents":[{"fileurl":"https://youtu.be/x"}]}]}]"""
+            "mod_quiz_get_quizzes_by_courses" -> """{"exception":"x","message":"dimatikan"}"""
+            else -> null } }
+        val items = MoodleApi.fetchAll(Site(base, "T", 1, "B", "S"), previous = prev).courses.single().items
+        assertEquals(setOf(6L, 8L), items.map { it.id }.toSet())               // materi baru tetap muncul
+        assertEquals("R", items.first { it.id == 6L }.attempts.single().review)  // data tes lama dipertahankan
+    }
+
+    @Test fun reviewMatchedByAttemptIdAndCappedPerSync() {
+        var reviewCalls = 0
+        val tries = (1..8).joinToString(",") { """{"id":${100 + it},"attempt":$it,"state":"finished","sumgrades":5,"timefinish":10}""" }
+        fakeSite { fn -> when (fn) {
+            "core_course_get_contents" -> """[{"name":"M1","modules":[{"id":6,"modname":"quiz","name":"Kuis","url":"$base/q"}]}]"""
+            "mod_quiz_get_quizzes_by_courses" -> """{"quizzes":[{"id":1,"coursemodule":6,"sumgrades":10,"grade":100,"attempts":0}]}"""
+            "mod_quiz_get_user_attempts" -> """{"attempts":[$tries]}"""
+            "mod_quiz_get_attempt_review" -> { reviewCalls++; """{"questions":[{"number":1,"html":"isi"}]}""" }
+            else -> null } }
+        val a = MoodleApi.fetchAll(Site(base, "T", 1, "B", "S")).courses.single().items.single().attempts
+        assertEquals(5, reviewCalls); assertEquals(5, a.count { it.review.isNotEmpty() })      // maks 5 panggilan baru per sinkron
+        assertEquals(50.0, a[0].grade!!, 0.001)
+        // nomor percobaan dipakai ulang dengan id baru: review lama tidak boleh ditempelkan
+        val prev = Snapshot(1, listOf(Course(11, "Algo", "", listOf(Item(6, "quiz", "K", "M1", "", null, 100.0, emptyList(), "", listOf(QuizAttempt(1, "finished", 1.0, 100.0, 1, 999, "LAMA")))), emptyList())), emptyList())
+        reviewCalls = 0
+        val b = MoodleApi.fetchAll(Site(base, "T", 1, "B", "S"), previous = prev).courses.single().items.single().attempts
+        assertFalse(b.any { it.review == "LAMA" })
+    }
+}

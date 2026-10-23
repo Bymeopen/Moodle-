@@ -28,6 +28,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -58,7 +59,7 @@ fun DocViewerDialog(doc: ViewDoc, onClose: () -> Unit, onExternal: () -> Unit) {
                 Box(Modifier.weight(1f).fillMaxWidth()) {
                     when (doc.kind) {
                         FileKind.PDF -> PdfPages(doc.file, onExternal)
-                        FileKind.IMG -> ImageView(doc.file)
+                        FileKind.IMG -> ImageView(doc.file, onExternal)
                         else -> TextView(doc.file, doc.title, onExternal)
                     }
                 }
@@ -67,12 +68,32 @@ fun DocViewerDialog(doc: ViewDoc, onClose: () -> Unit, onExternal: () -> Unit) {
     }
 }
 
+/** Dokumen PDF terbuka; ditutup lewat [mutex] agar tidak menabrak halaman yang sedang dirender. */
+private class PdfDoc(val pfd: ParcelFileDescriptor, val renderer: PdfRenderer, val mutex: Mutex = Mutex())
+private sealed interface PdfOpen { object Loading : PdfOpen; object Failed : PdfOpen; class Ready(val doc: PdfDoc) : PdfOpen }
+
 @Composable
 private fun PdfPages(file: File, onExternal: () -> Unit) {
-    val renderer = remember(file) { runCatching { PdfRenderer(ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY)) }.getOrNull() }
-    DisposableEffect(renderer) { onDispose { runCatching { renderer?.close() } } }
-    if (renderer == null || renderer.pageCount == 0) { Failure("PDF ini tidak bisa dibaca di aplikasi (mungkin terproteksi).", onExternal); return }
-    val mutex = remember(renderer) { Mutex() }                    // PdfRenderer hanya boleh membuka satu halaman sekaligus
+    val opened by produceState<PdfOpen>(PdfOpen.Loading, file) {
+        var doc: PdfDoc? = null
+        value = withContext(Dispatchers.IO) {                                 // I/O dan konstruktor PdfRenderer tidak boleh di main thread
+            try {
+                val pfd = ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY)
+                try { PdfRenderer(pfd).let { r -> if (r.pageCount == 0) { r.close(); pfd.close(); PdfOpen.Failed } else PdfOpen.Ready(PdfDoc(pfd, r).also { doc = it }) } }
+                catch (e: Exception) { runCatching { pfd.close() }; PdfOpen.Failed }                 // PDF terproteksi/rusak: jangan bocorkan descriptor
+            } catch (e: Exception) { PdfOpen.Failed }
+        }
+        awaitDispose { doc?.let { d -> kotlinx.coroutines.GlobalScope.launch(Dispatchers.IO) { d.mutex.withLock { runCatching { d.renderer.close() }; runCatching { d.pfd.close() } } } } }
+    }
+    when (val o = opened) {
+        PdfOpen.Loading -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
+        PdfOpen.Failed -> Failure("PDF ini tidak bisa dibaca di aplikasi (mungkin terproteksi).", onExternal)
+        is PdfOpen.Ready -> PdfContent(o.doc)
+    }
+}
+
+@Composable
+private fun PdfContent(doc: PdfDoc) {
     var zoom by rememberSaveable { mutableFloatStateOf(1f) }
     val list = rememberLazyListState()
     BoxWithConstraints(Modifier.fillMaxSize()) {
@@ -80,12 +101,12 @@ private fun PdfPages(file: File, onExternal: () -> Unit) {
         val widthPx = with(LocalDensity.current) { pageWidth.roundToPx() }.coerceIn(200, 2400)
         Box(Modifier.fillMaxSize().horizontalScroll(rememberScrollState())) {
             LazyColumn(Modifier.width(pageWidth).fillMaxHeight(), state = list, verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                items(renderer.pageCount, key = { it }) { i -> PdfPage(renderer, mutex, i, widthPx) }
+                items(doc.renderer.pageCount, key = { it }) { i -> PdfPage(doc.renderer, doc.mutex, i, widthPx) }
             }
         }
         Surface(Modifier.align(Alignment.BottomEnd).padding(16.dp), shape = MaterialTheme.shapes.large, tonalElevation = 6.dp, shadowElevation = 4.dp) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("${list.firstVisibleItemIndex + 1} / ${renderer.pageCount}", Modifier.padding(start = 14.dp), style = MaterialTheme.typography.labelLarge)
+                Text("${list.firstVisibleItemIndex + 1} / ${doc.renderer.pageCount}", Modifier.padding(start = 14.dp), style = MaterialTheme.typography.labelLarge)
                 IconButton({ zoom = (zoom - 0.5f).coerceAtLeast(1f) }, enabled = zoom > 1f) { Icon(Icons.Rounded.ZoomOut, "Perkecil") }
                 IconButton({ zoom = (zoom + 0.5f).coerceAtMost(2f) }, enabled = zoom < 2f) { Icon(Icons.Rounded.ZoomIn, "Perbesar") }
             }
@@ -116,6 +137,20 @@ private fun PdfPage(renderer: PdfRenderer, mutex: Mutex, index: Int, widthPx: In
     }
 }
 
+/** Pecah teks jadi potongan kecil untuk daftar malas: normalkan CRLF, pisah per paragraf, dan potong paragraf panjang (satu Text raksasa membuat layout macet). */
+fun textChunks(raw: String, max: Int = 2000): List<String> {
+    val out = mutableListOf<String>()
+    for (para in raw.replace("\r\n", "\n").replace('\r', '\n').split(Regex("\n{2,}"))) {
+        var rest = para.trim()
+        while (rest.length > max) {
+            val cut = rest.lastIndexOf('\n', max).takeIf { it > max / 2 } ?: rest.lastIndexOf(' ', max).takeIf { it > max / 2 } ?: max
+            out += rest.substring(0, cut).trim(); rest = rest.substring(cut).trim()
+        }
+        if (rest.isNotEmpty()) out += rest
+    }
+    return out
+}
+
 @Composable
 private fun TextView(file: File, name: String, onExternal: () -> Unit) {
     val text by produceState<String?>(null, file) { value = withContext(Dispatchers.IO) { FileText.extract(file, name) ?: "" } }
@@ -123,7 +158,7 @@ private fun TextView(file: File, name: String, onExternal: () -> Unit) {
         null -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
         "" -> Failure("Isi dokumen tidak bisa dibaca di aplikasi.", onExternal)
         else -> {
-            val paras = remember(t) { t.split(Regex("\\n{2,}")).filter { it.isNotBlank() } }
+            val paras = remember(t) { textChunks(t) }
             SelectionContainer {
                 LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     item { Text("Tampilan teks; tabel dan gambar tidak ditampilkan.", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
@@ -135,7 +170,8 @@ private fun TextView(file: File, name: String, onExternal: () -> Unit) {
 }
 
 @Composable
-private fun ImageView(file: File) {
+private fun ImageView(file: File, onExternal: () -> Unit) {
+    var done by remember(file) { mutableStateOf(false) }
     val bmp by produceState<Bitmap?>(null, file) {
         value = withContext(Dispatchers.IO) {
             try {
@@ -144,8 +180,14 @@ private fun ImageView(file: File) {
                 BitmapFactory.decodeFile(file.path, BitmapFactory.Options().apply { inSampleSize = s })
             } catch (e: OutOfMemoryError) { null }
         }
+        done = true
     }
-    bmp?.let { Image(it.asImageBitmap(), null, Modifier.fillMaxSize(), contentScale = ContentScale.Fit) } ?: Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
+    val b = bmp
+    when {
+        b != null -> Image(b.asImageBitmap(), null, Modifier.fillMaxSize(), contentScale = ContentScale.Fit)
+        done -> Failure("Gambar rusak atau formatnya tidak didukung.", onExternal)
+        else -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
+    }
 }
 
 @Composable

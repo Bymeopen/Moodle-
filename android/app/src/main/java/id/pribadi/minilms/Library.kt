@@ -66,12 +66,12 @@ object LibraryApi {
         return when (source) {
             LibSource.CAMPUS -> searchCampus(campus, q)
             LibSource.BOOKS -> parseArchive(http.get("https://archive.org/advancedsearch.php?q=${enc("(${luceneSafe(q)}) AND mediatype:texts AND access-restricted-item:false")}&fl[]=identifier&fl[]=title&fl[]=creator&fl[]=year&sort[]=downloads+desc&rows=25&output=json"))
-            LibSource.JOURNALS -> parseDoaj(http.get("https://doaj.org/api/search/articles/${enc(q)}?pageSize=25"))
+            LibSource.JOURNALS -> parseDoaj(http.get("https://doaj.org/api/search/articles/${enc(luceneSafe(q)).replace("+", "%20")}?pageSize=25"))
         }
     }
 
     /** Buang operator Lucene dari input pengguna (tanda kurung/kutip tak berpasangan membuat Internet Archive membalas galat). */
-    fun luceneSafe(q: String): String = q.replace(Regex("""[+\-&|!(){}\[\]^"~*?:\\/]"""), " ").replace(Regex("\\s+"), " ").trim().ifEmpty { "a" }
+    fun luceneSafe(q: String): String = q.replace(Regex("""[+\-&|!(){}\[\]^"~*?:\\/]"""), " ").replace(Regex("\\b(AND|OR|NOT)\\b"), " ").replace(Regex("\\s+"), " ").trim().ifEmpty { "a" }
 
     fun parseArchive(json: String): List<LibItem> {
         val docs = JSONObject(json).optJSONObject("response")?.optJSONArray("docs") ?: return emptyList()
@@ -86,7 +86,8 @@ object LibraryApi {
         return rs.objects().mapNotNull { r ->
             val b = r.optJSONObject("bibjson") ?: return@mapNotNull null
             val link = b.optJSONArray("link")?.objects()?.firstOrNull { it.optString("type") == "fulltext" }?.optString("url")
-                ?.takeIf { (it.startsWith("https://") || it.startsWith("http://")) && PublicHttp.publicHost(WebPolicy.hostOf(it) ?: "") } ?: return@mapNotNull null
+                ?.takeIf { (it.startsWith("https://") || it.startsWith("http://")) && PublicHttp.publicHost(WebPolicy.hostOf(it) ?: "") }
+                ?.let { if (it.startsWith("http://")) "https://" + it.removePrefix("http://") else it } ?: return@mapNotNull null
             val authors = b.optJSONArray("author")?.objects()?.map { it.optString("name") }?.filter { it.isNotBlank() }?.joinToString(", ").orEmpty()
             if (r.optString("id").isBlank() || b.optString("title").isBlank()) return@mapNotNull null
             LibItem(LibSource.JOURNALS, r.optString("id"), b.optString("title"), authors, b.optString("year"), b.optJSONObject("journal")?.optString("title").orEmpty(), link)
@@ -122,6 +123,7 @@ object PublicHttp {
 
     /** Alamat jaringan internal (loopback, privat, link-local) tidak boleh dijangkau walau namanya tampak publik. */
     fun blockedAddress(a: java.net.InetAddress) = a.isLoopbackAddress || a.isSiteLocalAddress || a.isLinkLocalAddress || a.isAnyLocalAddress || a.isMulticastAddress ||
+        (a.address.size == 4 && a.address[0].toInt() == 100 && (a.address[1].toInt() and 0xC0) == 0x40) ||           // 100.64.0.0/10 (CGNAT)
         (a.address.size == 16 && (a.address[0].toInt() and 0xFE) == 0xFC)                                           // fc00::/7 (ULA)
 
     private fun open(start: String): HttpURLConnection {
@@ -189,7 +191,7 @@ object PdfResolver {
 
     /** PDF untuk halaman [pageUrl]: tautan langsung, atau cari di isi halamannya. */
     fun resolve(pageUrl: String, fetch: (String) -> String = { PublicHttp.getText(it) }): String? =
-        if (isDirectPdf(pageUrl)) pageUrl else find(fetch(pageUrl), pageUrl)
+        pageUrl.let { if (it.startsWith("http://")) "https://" + it.removePrefix("http://") else it }.let { u -> if (isDirectPdf(u)) u else find(fetch(u), u) }
 }
 
 /** Indeks buku perpustakaan yang tersimpan di filesDir/library (publik, tidak dihapus saat logout). */

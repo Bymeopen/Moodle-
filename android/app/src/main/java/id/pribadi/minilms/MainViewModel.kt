@@ -101,6 +101,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     // ---------- login ----------
     private fun finishLogin(base: String, token: String, privateToken: String = "") {
         val s = MoodleApi.siteInfo(base, token, privateToken)  // verifikasi token sekaligus
+        repo.site.value?.let { old -> if (old.userId != s.userId || old.url != s.url) repo.logout() }     // akun/situs lain: jangan campur data akun lama
         repo.saveSite(s)
         Jobs.scheduleReminders(getApplication(), repo.reminders)
         repo.sync()
@@ -329,7 +330,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     val (url, size) = if (item.source == LibSource.BOOKS) {
                         val (name, sz) = LibraryApi.pdfFor(item.id) ?: throw ApiError("Buku ini tidak punya PDF yang bisa diunduh")
                         LibraryApi.downloadUrl(item.id, name) to sz
-                    } else (PdfResolver.resolve(item.url) ?: run { openInstead = item.url; throw ApiError("PDF tidak tersedia untuk diunduh (mungkin dikunci); dibuka sebagai halaman") }) to 0L
+                    } else (try { PdfResolver.resolve(item.url) } catch (e: Exception) { null } ?: run { openInstead = item.url; throw ApiError("PDF tidak tersedia untuk diunduh (mungkin dikunci); dibuka sebagai halaman") }) to 0L
                     val dest = java.io.File(java.io.File(getApplication<Application>().filesDir, "library"), safeName("${item.id}.pdf"))
                     PublicHttp.download(url, dest, 300L * 1024 * 1024, { false }) { b -> if (size > 0) _lib.update { it.copy(downloading = it.downloading + (item.id to (b.toFloat() / size).coerceIn(0f, 1f))) } }
                     val head = dest.inputStream().use { i -> ByteArray(5).also { i.read(it) } }
@@ -354,13 +355,16 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun stopPlaying() { _playing.value = null }
 
     /** Halaman web yang sedang dibuka di dalam aplikasi (WebView); null = tidak ada. */
-    private val _web = MutableStateFlow<String?>(null)
-    val web: StateFlow<String?> = _web
+    /** [url] = halaman tujuan (aman dimuat ulang); [launch] = URL autologin sekali pakai, dipakai hanya untuk pemuatan pertama lalu dibuang. */
+    data class WebTarget(val url: String, val launch: String? = null)
+    private val _web = MutableStateFlow<WebTarget?>(null)
+    val web: StateFlow<WebTarget?> = _web
     fun closeWeb() { _web.value = null }
+    fun consumeLaunch() { _web.update { it?.copy(launch = null) } }
     /** Buka tautan (YouTube, rekaman, dll.) di dalam aplikasi; hanya http(s). */
     fun openInApp(url: String) {
         if (WebPolicy.hostOf(url) == null) { _message.value = "Tautan tidak didukung"; return }
-        _web.value = if (url.startsWith("http://")) "https://" + url.removePrefix("http://") else url        // lalu lintas teks biasa diblokir Android
+        _web.value = WebTarget(if (url.startsWith("http://")) "https://" + url.removePrefix("http://") else url)        // lalu lintas teks biasa diblokir Android
     }
 
     // ---------- sesi Moodle di WebView ----------
@@ -378,12 +382,14 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val site = repo.site.value
         if (site == null) { openInApp(url); return }
         if (site.privateToken.isEmpty()) { _needReauth.value = true; return }
+        if (WebPolicy.hostOf(url) == null) { _message.value = "Tautan tidak didukung"; return }
         lastMoodleUrl = url
         viewModelScope.launch {
             val fresh = System.currentTimeMillis() - autologinAt < SESSION_FRESH_MS
             val auto = if (fresh) null else withContext(Dispatchers.IO) { MoodleApi.autologinUrl(site, url) }
             if (auto != null) autologinAt = System.currentTimeMillis()
-            _web.value = auto ?: url
+            if (repo.site.value == null) return@launch               // logout terjadi selagi menunggu kunci
+            _web.value = WebTarget(url, auto)
         }
     }
 

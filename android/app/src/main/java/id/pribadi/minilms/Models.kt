@@ -62,4 +62,7 @@ fun JSONObject.toSnapshot() = Snapshot(getLong("syncedAt"), getJSONArray("course
     getJSONArray("warnings").let { a -> (0 until a.length()).map { a.getString(it) } })
 
 fun Site.toJson() = JSONObject().put("url", url).put("token", token).put("userId", userId).put("fullName", fullName).put("siteName", siteName).put("privateToken", privateToken)
-fun JSONObject.toSite() = Site(getString("url"), getString("token"), getLong("userId"), getString("fullName"), getString("siteName"), optString("privateToken"))
+fun JSONObject.toSite() = Site(getString("url"), getString("token"), getLong("userId"), getString("fullName"), getString("siteName"), optStr("privateToken"))
+
+/** optString yang memperlakukan JSON null sebagai kosong (org.json Android mengembalikan teks "null"). */
+fun JSONObject.optStr(key: String): String = if (isNull(key)) "" else optString(key)
