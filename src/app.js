@@ -2,6 +2,7 @@ import express from 'express';
 import { hashPassword, verifyPassword, issueToken, readToken } from './auth.js';
 import { createAi } from './ai.js';
 import { review, ratings, toDay, addDays } from './srs.js';
+import { MoodleClient, MoodleError, normalizeBaseUrl, requestToken, fetchAll } from './moodle.js';
 
 class HttpError extends Error {
   constructor(status, message) { super(message); this.status = status; }
@@ -116,6 +117,8 @@ export function createApp(db, { ai = createAi() } = {}) {
       if (!manage && it.type === 'quiz') {
         out.best_score = q('SELECT MAX(score) AS s FROM attempts WHERE item_id = ? AND user_id = ?').get(it.id, req.user.id).s;
       }
+      out.external = !!it.external_id;
+      delete out.external_id;
       out.completed = !!q('SELECT 1 FROM completions WHERE item_id = ? AND user_id = ?').get(it.id, req.user.id);
       return out;
     });
@@ -165,6 +168,7 @@ export function createApp(db, { ai = createAi() } = {}) {
   app.post('/api/items/:id/submit', auth, route((req, res) => {
     const item = getItem(req.params.id);
     need(item.type === 'assignment', 'Bukan tugas');
+    if (item.external_id) fail(400, 'Tugas ini dari Moodle kampus; kumpulkan di sana');
     if (!isEnrolled(req.user, item.course_id)) fail(403, 'Belum terdaftar di kursus ini');
     if (item.due_at && Date.parse(item.due_at) < Date.now()) fail(403, 'Tenggat sudah lewat');
     need(str(req.body?.text), 'Jawaban kosong');
@@ -295,6 +299,85 @@ export function createApp(db, { ai = createAi() } = {}) {
     });
   }));
 
+
+  // ---------- impor dari Moodle kampus ----------
+  const moodleErr = (e) => (e instanceof MoodleError ? new HttpError(502, e.message) : e);
+  const moodleRoute = (fn) => (req, res, next) => Promise.resolve().then(() => fn(req, res)).catch((e) => next(moodleErr(e)));
+  const getConn = (uid) => q('SELECT * FROM moodle_connections WHERE user_id = ?').get(uid);
+
+  app.get('/api/moodle', auth, route((req, res) => {
+    const c = getConn(req.user.id); // token tidak pernah dikirim ke klien
+    res.json(c ? { connected: true, url: c.url, site_name: c.site_name, last_sync: c.last_sync } : { connected: false });
+  }));
+
+  // Sambungkan: kirim {url, token} atau {url, username, password}. Password hanya dipakai sekali untuk meminta token.
+  app.post('/api/moodle/connect', auth, moodleRoute(async (req, res) => {
+    const { url, token, username, password } = req.body ?? {};
+    need(str(url) && (str(token) || (str(username) && typeof password === 'string' && password)), 'Isi URL dan token, atau URL + username + password');
+    const base = await normalizeBaseUrl(url.trim());
+    const tk = str(token) ?? await requestToken(base, username.trim(), password);
+    const info = await new MoodleClient(base, tk).call('core_webservice_get_site_info'); // verifikasi token
+    q(`INSERT INTO moodle_connections (user_id, url, token, moodle_userid, site_name) VALUES (?,?,?,?,?)
+       ON CONFLICT (user_id) DO UPDATE SET url = excluded.url, token = excluded.token, moodle_userid = excluded.moodle_userid,
+       site_name = excluded.site_name, last_sync = NULL`).run(req.user.id, base, tk, info.userid, info.sitename ?? null);
+    res.json({ connected: true, site_name: info.sitename, user: info.fullname });
+  }));
+
+  app.delete('/api/moodle', auth, route((req, res) => {
+    q('DELETE FROM moodle_connections WHERE user_id = ?').run(req.user.id); // data hasil impor tetap ada
+    res.json({ ok: true });
+  }));
+
+  // Sinkron: tarik semua data lalu upsert. Aman dijalankan berulang (progres, kartu, dan penanda selesai tidak hilang).
+  app.post('/api/moodle/sync', auth, moodleRoute(async (req, res) => {
+    const conn = getConn(req.user.id) ?? fail(400, 'Belum terhubung ke Moodle');
+    const data = await fetchAll(new MoodleClient(conn.url, conn.token));
+    const uid = req.user.id;
+    const stats = { courses: 0, items: 0, grades: 0 };
+    db.exec('BEGIN');
+    try {
+      for (const c of data.courses) {
+        const row = q('SELECT id FROM courses WHERE teacher_id = ? AND external_id = ?').get(uid, c.ext);
+        let cid;
+        if (row) {
+          cid = row.id;
+          q('UPDATE courses SET title = ?, description = ? WHERE id = ?').run(c.title, c.summary, cid);
+        } else {
+          cid = Number(q('INSERT INTO courses (title, description, teacher_id, external_id) VALUES (?,?,?,?)').run(c.title, c.summary, uid, c.ext).lastInsertRowid);
+        }
+        stats.courses += 1;
+        c.items.forEach((it, i) => {
+          q(`INSERT INTO items (course_id, type, title, content, max_grade, due_at, position, external_id) VALUES (?,?,?,?,?,?,?,?)
+             ON CONFLICT (course_id, external_id) WHERE external_id IS NOT NULL
+             DO UPDATE SET type = excluded.type, title = excluded.title, content = excluded.content,
+             max_grade = excluded.max_grade, due_at = excluded.due_at, position = excluded.position`)
+            .run(cid, it.type, it.title, it.content ?? '', it.max_grade ?? 100, it.due_at ?? null, i + 1, it.ext);
+          stats.items += 1;
+        });
+        q('DELETE FROM external_grades WHERE course_id = ? AND user_id = ?').run(cid, uid);
+        const ins = q('INSERT OR REPLACE INTO external_grades (course_id, user_id, name, grade, max) VALUES (?,?,?,?,?)');
+        for (const g of c.grades) { ins.run(cid, uid, g.name, g.grade, g.max); stats.grades += 1; }
+      }
+      q('UPDATE moodle_connections SET last_sync = ?, site_name = ? WHERE user_id = ?').run(new Date().toISOString(), data.site.sitename ?? null, uid);
+      db.exec('COMMIT');
+    } catch (e) { db.exec('ROLLBACK'); throw e; }
+    res.json({ ...stats, warnings: data.warnings });
+  }));
+
+  app.get('/api/courses/:id/external-grades', auth, route((req, res) => {
+    assertView(req.user, getCourse(req.params.id));
+    res.json(q('SELECT name, grade, max FROM external_grades WHERE course_id = ? AND user_id = ? ORDER BY rowid').all(req.params.id, req.user.id));
+  }));
+
+  // tenggat tugas mendatang di semua kursus yang dimiliki/diikuti
+  app.get('/api/deadlines', auth, route((req, res) => {
+    res.json(q(`SELECT i.id, i.title, i.due_at, c.id AS course_id, c.title AS course,
+                  EXISTS (SELECT 1 FROM completions x WHERE x.item_id = i.id AND x.user_id = ?) AS completed
+                FROM items i JOIN courses c ON c.id = i.course_id
+                WHERE i.type = 'assignment' AND i.due_at > ? AND (c.teacher_id = ? OR EXISTS (SELECT 1 FROM enrollments e WHERE e.course_id = c.id AND e.user_id = ?))
+                ORDER BY i.due_at LIMIT 50`).all(req.user.id, new Date().toISOString(), req.user.id, req.user.id)
+      .map((r) => ({ ...r, completed: !!r.completed })));
+  }));
 
   // ---------- fitur AI (opsional; butuh ANTHROPIC_API_KEY) ----------
   const MAX_CONTEXT_CHARS = 400_000;

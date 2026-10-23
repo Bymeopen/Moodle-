@@ -23,6 +23,16 @@ Env: `PORT`, `DB_FILE` (default `data/lms.db`), `SECRET` (kunci token; set agar 
 - AI (opsional): buat kartu dari materi kursus, ditinjau sebelum disimpan
 - `ALLOW_REGISTRATION=false` menutup pendaftaran setelah akun pertama (untuk server pribadi)
 
+## Hubungkan Moodle kampus (menu "Moodle kampus")
+Impor read-only lewat Moodle Web Service resmi: mata kuliah, materi (halaman, tautan), tugas + tenggat, dan nilai. Sinkron ulang aman (upsert; progres, kartu, dan penanda selesai tidak hilang). Tenggat tampil di beranda; materi bisa dipakai untuk kartu hafalan dan tutor AI.
+
+- Login: username+password (dipakai sekali untuk meminta token dari `/login/token.php`, tidak disimpan) **atau** tempel token dari Moodle (Preferensi → Kunci keamanan).
+- Syarat: kampus mengaktifkan layanan `moodle_mobile_app`. Jika `login/token.php` menolak, minta admin kampus atau pakai token manual.
+- Token disimpan **plaintext** di `data/lms.db`: jaga file itu (`chmod 600`) dan cabut token di Moodle bila perlu.
+- Keamanan: hanya `https://`, alamat jaringan internal diblokir (anti-SSRF), redirect tidak diikuti. `MOODLE_ALLOW_PRIVATE=true` hanya untuk dev/test.
+- Tidak diimpor: isi file (PDF/slide; butuh sesi login kampus, hanya tautan), kuis, forum, pengumpulan tugas. Kumpulkan tugas tetap di Moodle.
+- SSO kampus (SAML/OAuth) untuk login ke Mini LMS tidak termasuk; butuh pendaftaran aplikasi oleh admin kampus.
+
 ## Belum ada (dibanding Moodle)
 Upload file, forum, grup, backup, plugin, SCORM, notifikasi, rubrik, tipe soal lain, i18n.
 

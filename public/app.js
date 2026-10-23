@@ -45,6 +45,7 @@ const show = (...nodes) => $app.replaceChildren(...nodes.flat().filter((n) => n 
 function renderNav() {
   $nav.replaceChildren(...(me ? [
     h('span', { className: 'muted' }, `${me.name} (${me.role})`),
+    h('a', { href: '#/moodle' }, 'Moodle kampus'),
     me.role === 'admin' ? h('a', { href: '#/users' }, 'Pengguna') : null,
     h('button', { className: 'ghost', onclick: () => { localStorage.removeItem('token'); token = me = null; route(); } }, 'Keluar'),
   ] : []).filter(Boolean));
@@ -64,10 +65,15 @@ async function homeView() {
   const courses = await api('GET', '/courses');
   const canCreate = me.role !== 'student';
   const st = await api('GET', '/study/stats');
+  const deadlines = (await api('GET', '/deadlines')).filter((d) => !d.completed);
   show(
     h('div', { className: 'card row between' },
       h('div', {}, h('strong', {}, `🔥 ${st.streak} hari beruntun`), h('div', { className: 'muted' }, `${st.reviewed_today} kartu direview hari ini`)),
       st.due ? h('button', { onclick: () => (location.hash = '#/review') }, `Review ${st.due} kartu`) : h('span', { className: 'muted' }, 'Tidak ada kartu jatuh tempo ✓')),
+    deadlines.length > 0 && h('div', { className: 'card' }, h('strong', {}, 'Tenggat mendatang'),
+      deadlines.slice(0, 8).map((d) => h('div', { className: 'row between' },
+        h('a', { href: `#/course/${d.course_id}` }, `${d.title} — ${d.course}`),
+        h('span', { className: 'muted' }, new Date(d.due_at).toLocaleString('id-ID', { dateStyle: 'medium', timeStyle: 'short' }))))),
     canCreate && h('div', { className: 'card' }, h('h3', {}, 'Buat kursus'),
       form([['title', 'Judul'], ['description', 'Deskripsi', 'textarea']], 'Buat',
         async (v) => { const { id } = await api('POST', '/courses', v); location.hash = `#/course/${id}`; })),
@@ -94,6 +100,7 @@ async function courseView(id) {
     h('p', {}, course.description),
     h('div', { className: 'card' }, h('div', { className: 'muted' }, `Progres: ${course.progress.done}/${course.progress.total} item selesai`),
       h('progress', { value: course.progress.done, max: Math.max(course.progress.total, 1), style: 'width:100%' })),
+    externalGradesPanel(id),
     cardsPanel(id),
     aiEnabled && tutorPanel(id),
     course.items.map((it) => itemCard(it, m)),
@@ -108,7 +115,8 @@ function itemCard(it, manage) {
   if (it.type === 'link') body.push(h('a', { href: /^https?:\/\//.test(it.content) ? it.content : '#', target: '_blank', rel: 'noopener' }, it.content));
   if (it.type === 'assignment') {
     body.push(h('p', { style: 'white-space:pre-wrap' }, it.content), h('div', { className: 'muted' }, `Nilai maks ${it.max_grade}${it.due_at ? ` · tenggat ${it.due_at}` : ''}`));
-    if (manage) body.push(h('button', { className: 'ghost', onclick: () => (location.hash = `#/submissions/${it.id}`) }, 'Lihat pengumpulan'));
+    if (it.external) body.push(h('div', { className: 'muted' }, 'Tugas dari Moodle kampus: kumpulkan dan lihat nilainya di sana.'));
+    else if (manage) body.push(h('button', { className: 'ghost', onclick: () => (location.hash = `#/submissions/${it.id}`) }, 'Lihat pengumpulan'));
     else {
       const s = it.submission;
       if (s) body.push(h('div', { className: 'muted' }, s.grade == null ? 'Sudah dikirim, belum dinilai' : `Nilai: ${s.grade}/${it.max_grade}${s.feedback ? ` — ${s.feedback}` : ''}`));
@@ -132,6 +140,17 @@ function itemCard(it, manage) {
           onchange: async (e) => { await api('POST', `/items/${it.id}/complete`, { done: e.target.checked }); reload(); } }), 'Selesai'),
         manage && h('button', { className: 'ghost', onclick: async () => { await api('DELETE', `/items/${it.id}`); reload(); } }, 'Hapus'))),
     body);
+}
+
+function externalGradesPanel(courseId) {
+  const box = h('div');
+  api('GET', `/courses/${courseId}/external-grades`).then((rows) => {
+    if (!rows.length) return;
+    box.className = 'card';
+    box.append(h('strong', {}, 'Nilai dari Moodle kampus'), h('table', {}, rows.map((g) =>
+      h('tr', {}, h('td', {}, g.name), h('td', {}, g.grade == null ? '–' : `${g.grade}${g.max ? ` / ${g.max}` : ''}`)))));
+  }).catch(() => {});
+  return box;
 }
 
 function cardsPanel(courseId) {
@@ -262,6 +281,40 @@ async function gradesView(id) {
       rows.map((r) => h('tr', {}, h('td', {}, r.student), r.grades.map((g) => h('td', {}, g ?? '–')), h('td', {}, r.percent ?? '–'))))));
 }
 
+async function moodleView() {
+  const st = await api('GET', '/moodle');
+  const msg = h('div', { className: 'muted' });
+  const err = h('div', { className: 'error' });
+  const guard = (fn) => async () => { err.textContent = ''; try { await fn(); } catch (e) { err.textContent = e.message; } };
+
+  if (st.connected) {
+    return show(h('a', { href: '#/' }, '← Kembali'), h('h2', {}, 'Moodle kampus'),
+      h('div', { className: 'card' },
+        h('p', {}, `Terhubung ke ${st.site_name || st.url}`), h('div', { className: 'muted' }, st.url),
+        h('div', { className: 'muted' }, st.last_sync ? `Sinkron terakhir: ${new Date(st.last_sync).toLocaleString('id-ID')}` : 'Belum pernah sinkron'),
+        h('div', { className: 'row' },
+          h('button', { onclick: guard(async () => {
+            msg.textContent = 'Menarik mata kuliah, materi, tugas, dan nilai…';
+            const r = await api('POST', '/moodle/sync');
+            msg.textContent = `Selesai: ${r.courses} kursus, ${r.items} item, ${r.grades} nilai.${r.warnings.length ? ` Peringatan: ${r.warnings.join('; ')}` : ''}`;
+          }) }, 'Sinkron sekarang'),
+          h('button', { className: 'ghost', onclick: guard(async () => { await api('DELETE', '/moodle'); route(); }) }, 'Putuskan')),
+        msg, err),
+      h('p', { className: 'muted' }, 'Data hasil impor bersifat baca-saja. Materi bisa dipakai untuk kartu hafalan dan tutor AI; tugas dikumpulkan di Moodle kampus.'));
+  }
+  const url = h('input', { placeholder: 'https://lms.kampus.ac.id', type: 'url' });
+  const user = h('input', { placeholder: 'Username kampus', autocomplete: 'username' });
+  const pass = h('input', { type: 'password', placeholder: 'Password kampus', autocomplete: 'current-password' });
+  const token = h('input', { placeholder: 'Token (opsional; ganti username+password)', autocomplete: 'off' });
+  show(h('a', { href: '#/' }, '← Kembali'), h('h2', {}, 'Hubungkan Moodle kampus'),
+    h('div', { className: 'card' },
+      h('p', { className: 'muted' }, 'Password hanya dipakai sekali untuk meminta token resmi dari Moodle dan tidak disimpan. Hanya token yang disimpan di server ini. Alternatif: tempel token dari Moodle (Preferensi → Kunci keamanan) dan kosongkan username/password.'),
+      url, user, pass, token, h('button', { onclick: guard(async () => {
+        const body = token.value.trim() ? { url: url.value, token: token.value } : { url: url.value, username: user.value, password: pass.value };
+        await api('POST', '/moodle/connect', body); route();
+      }) }, 'Hubungkan'), err));
+}
+
 async function usersView() {
   const users = await api('GET', '/users');
   show(h('a', { href: '#/' }, '← Kembali'), h('h2', {}, 'Pengguna'), h('div', { className: 'card' }, h('table', {},
@@ -281,6 +334,7 @@ async function route() {
     else if (page === 'submissions') await submissionsView(arg);
     else if (page === 'grades') await gradesView(arg);
     else if (page === 'review') await reviewView(arg);
+    else if (page === 'moodle') await moodleView();
     else if (page === 'users' && me.role === 'admin') await usersView();
     else await homeView();
   } catch (e) { show(h('div', { className: 'error' }, e.message)); }

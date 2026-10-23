@@ -72,6 +72,26 @@ export function openDb(file = process.env.DB_FILE || 'data/lms.db') {
       card_id INTEGER, rating TEXT NOT NULL, day TEXT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS review_log_day ON review_log (user_id, day);
+    -- impor dari Moodle kampus (read-only mirror; token disimpan, password tidak)
+    CREATE TABLE IF NOT EXISTS moodle_connections (
+      user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+      url TEXT NOT NULL, token TEXT NOT NULL, moodle_userid INTEGER NOT NULL,
+      site_name TEXT, last_sync TEXT
+    );
+    CREATE TABLE IF NOT EXISTS external_grades (
+      course_id INTEGER NOT NULL REFERENCES courses(id) ON DELETE CASCADE,
+      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      name TEXT NOT NULL, grade REAL, max REAL,
+      PRIMARY KEY (course_id, user_id, name)
+    );
+  `);
+  // migrasi untuk DB lama: kolom external_id penanda data hasil impor (agar sinkron ulang = upsert)
+  for (const t of ['courses', 'items']) {
+    if (!db.prepare(`PRAGMA table_info(${t})`).all().some((c) => c.name === 'external_id')) db.exec(`ALTER TABLE ${t} ADD COLUMN external_id TEXT`);
+  }
+  db.exec(`
+    CREATE UNIQUE INDEX IF NOT EXISTS courses_ext ON courses (teacher_id, external_id) WHERE external_id IS NOT NULL;
+    CREATE UNIQUE INDEX IF NOT EXISTS items_ext ON items (course_id, external_id) WHERE external_id IS NOT NULL;
   `);
   return db;
 }
