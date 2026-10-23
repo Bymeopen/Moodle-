@@ -30,6 +30,20 @@ class Repo private constructor(ctx: Context) {
     val tick: StateFlow<Int> = _tick
     fun bump() { _tick.value++ }
 
+    // ---------- kartu hafalan ----------
+    private val cardsFile = File(app.filesDir, "cards.json")
+    private val _cards = MutableStateFlow(runCatching { org.json.JSONArray(cardsFile.readText()).toCards() }.getOrDefault(emptyList()))
+    val cards: StateFlow<List<Card>> = _cards
+
+    private fun saveCards(list: List<Card>) {
+        val tmp = File(cardsFile.path + ".tmp"); tmp.writeText(list.toJsonArray().toString())
+        if (!tmp.renameTo(cardsFile)) throw IOException("Gagal menyimpan kartu")
+        _cards.value = list
+    }
+    fun addCards(new: List<Card>) = saveCards(_cards.value + new)
+    fun updateCard(c: Card) = saveCards(_cards.value.map { if (it.id == c.id) c else it })
+    fun deleteCard(id: String) = saveCards(_cards.value.filter { it.id != id })
+
     var wifiOnly: Boolean
         get() = prefs.getBoolean("wifi_only", true)
         set(v) = prefs.edit().putBoolean("wifi_only", v).apply()
@@ -43,7 +57,7 @@ class Repo private constructor(ctx: Context) {
     /** Keluar: hapus token, snapshot, dan semua file unduhan. */
     fun logout() {
         prefs.edit().clear().apply()
-        snapFile.delete(); root.deleteRecursively()
+        snapFile.delete(); cardsFile.delete(); _cards.value = emptyList(); root.deleteRecursively()
         _site.value = null; _snapshot.value = null; bump()
     }
 

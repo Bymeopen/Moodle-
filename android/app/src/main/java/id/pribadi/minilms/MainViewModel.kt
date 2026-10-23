@@ -23,6 +23,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     val site = repo.site
     val snapshot = repo.snapshot
     val tick = repo.tick
+    val ai = AiController(app, repo, viewModelScope)
+    val cards = repo.cards
 
     private val _busy = MutableStateFlow(false)
     val busy: StateFlow<Boolean> = _busy

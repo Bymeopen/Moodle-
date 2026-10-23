@@ -127,13 +127,15 @@ fun LoginScreen(vm: MainViewModel) {
 fun MainScreen(vm: MainViewModel) {
     var tab by rememberSaveable { mutableIntStateOf(0) }
     var openCourse by rememberSaveable { mutableStateOf<Long?>(null) }
+    var reviewing by rememberSaveable { mutableStateOf(false) }
     val snapshot by vm.snapshot.collectAsStateWithLifecycle()
 
     // izin notifikasi untuk unduhan dan pengingat (Android 13+)
     val perm = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { }
     LaunchedEffect(Unit) { if (Build.VERSION.SDK_INT >= 33 && !Notif.canPost(vm.getApplication())) perm.launch(Manifest.permission.POST_NOTIFICATIONS) }
 
-    BackHandler(enabled = openCourse != null) { openCourse = null }
+    BackHandler(enabled = openCourse != null || reviewing) { if (reviewing) reviewing = false else openCourse = null }
+    if (reviewing) { ReviewScreen(vm) { reviewing = false }; return }
     val course = snapshot?.courses?.firstOrNull { it.id == openCourse }
     if (course != null) { CourseScreen(vm, course) { openCourse = null }; return }
 
@@ -143,11 +145,12 @@ fun MainScreen(vm: MainViewModel) {
                 0 -> CoursesTab(vm) { openCourse = it }
                 1 -> DeadlinesTab(vm) { openCourse = it }
                 2 -> GradesTab(vm)
+                3 -> AiTab(vm) { reviewing = true }
                 else -> SettingsTab(vm)
             }
         }
         NavigationBar {
-            listOf("📚" to "Kursus", "⏰" to "Tenggat", "📊" to "Nilai", "⚙️" to "Lainnya").forEachIndexed { i, (icon, label) ->
+            listOf("📚" to "Kursus", "⏰" to "Tenggat", "📊" to "Nilai", "✨" to "AI", "⚙️" to "Lainnya").forEachIndexed { i, (icon, label) ->
                 NavigationBarItem(selected = tab == i, onClick = { tab = i }, icon = { Text(icon) }, label = { Text(label) })
             }
         }
@@ -362,10 +365,16 @@ fun SettingsTab(vm: MainViewModel) {
             Text("Penggunaan ruang: ${fmtSize(used)}")
             OutlinedButton({ vm.deleteDownloads() }, enabled = used > 0) { Text("Hapus semua unduhan") }
         } }
+        Card(Modifier.fillMaxWidth()) { Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            val model by vm.ai.model.collectAsStateWithLifecycle(); val hasKey by vm.ai.hasKey.collectAsStateWithLifecycle()
+            Text("Claude AI", fontWeight = FontWeight.SemiBold)
+            Models.all.forEach { (id, label) -> Row(verticalAlignment = Alignment.CenterVertically) { RadioButton(model == id, { vm.ai.setModel(id) }); Text(label) } }
+            if (hasKey) OutlinedButton({ vm.ai.clearKey() }) { Text("Hapus kunci API") } else Text("Kunci API belum diisi (tab AI).", style = MaterialTheme.typography.bodySmall)
+        } }
         Button({ confirmLogout = true }, colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error), modifier = Modifier.fillMaxWidth()) { Text("Keluar") }
     }
     if (confirmLogout) AlertDialog(onDismissRequest = { confirmLogout = false }, title = { Text("Keluar?") },
-        text = { Text("Token, data kursus, dan semua file unduhan di ponsel ini akan dihapus.") },
+        text = { Text("Token, data kursus, kartu hafalan, dan semua file unduhan di ponsel ini akan dihapus. Kunci API Claude tidak ikut terhapus.") },
         confirmButton = { TextButton({ confirmLogout = false; vm.logout() }) { Text("Keluar") } },
         dismissButton = { TextButton({ confirmLogout = false }) { Text("Batal") } })
 }
