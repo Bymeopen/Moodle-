@@ -1,6 +1,8 @@
 package id.pribadi.minilms
 
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.text.KeyboardActions
@@ -23,7 +25,7 @@ fun LibraryScreen(vm: MainViewModel, onBack: () -> Unit) {
     LaunchedEffect(Unit) { vm.libraryLoad() }
     Column(Modifier.fillMaxSize()) {
         BackBar("Perpustakaan", onBack)
-        LibraryContent(st, vm::librarySource, vm::librarySearch, vm::libraryDownload, vm::openLink, vm::libraryOpen, vm::libraryDelete)
+        LibraryContent(st, vm::librarySource, vm::librarySearch, vm::libraryDownload, vm::openInApp, vm::libraryOpen, vm::libraryDelete, vm::libraryCampus)
     }
 }
 
@@ -32,6 +34,7 @@ fun LibraryScreen(vm: MainViewModel, onBack: () -> Unit) {
 fun LibraryContent(
     st: MainViewModel.LibState, onSource: (LibSource) -> Unit, onSearch: (String) -> Unit, onDownload: (LibItem) -> Unit,
     onOpenUrl: (String) -> Unit, onOpenSaved: (LibSaved) -> Unit, onDeleteSaved: (LibSaved) -> Unit,
+    onCampus: (Campus) -> Unit = {},
 ) {
     val cs = MaterialTheme.colorScheme
     var tab by rememberSaveable { mutableIntStateOf(0) }            // 0 cari, 1 tersimpan
@@ -50,6 +53,15 @@ fun LibraryContent(
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         LibSource.values().forEach { s -> FilterChip(st.source == s, { onSource(s) }, { Text(s.label) }) }
                     }
+                    if (st.source == LibSource.CAMPUS) {
+                        Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            LibraryApi.campuses.forEach { c -> FilterChip(st.campus == c, { onCampus(c) }, { Text(c.name) }) }
+                        }
+                        if (!st.campus.verified) Text("Situs ini belum teruji dari aplikasi; bila gagal, buka lewat browser.", style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant)
+                        Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            MANAGEMENT_TOPICS.forEach { t -> SuggestionChip({ q = t; onSearch(t) }, { Text(t) }) }
+                        }
+                    }
                     Text(st.source.hint, style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant)
                     OutlinedTextField(q, { q = it }, Modifier.fillMaxWidth(), singleLine = true, placeholder = { Text("Cari judul, penulis, atau topik") },
                         leadingIcon = { Icon(Icons.Rounded.Search, null) },
@@ -65,14 +77,14 @@ fun LibraryContent(
                 val saved = st.saved.any { it.id == r.id }
                 Card2(Modifier.fillMaxWidth()) {
                     Row(Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                        IconBadge(if (r.source == LibSource.BOOKS) Icons.Rounded.MenuBook else Icons.Rounded.Article, cs.tertiary, size = 36.dp)
+                        IconBadge(when (r.source) { LibSource.BOOKS -> Icons.Rounded.MenuBook; LibSource.CAMPUS -> Icons.Rounded.School; else -> Icons.Rounded.Article }, cs.tertiary, size = 36.dp)
                         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                             Text(r.title, style = MaterialTheme.typography.titleSmall, maxLines = 3, overflow = TextOverflow.Ellipsis)
                             val meta = listOf(r.author, r.year, r.note).filter { it.isNotBlank() }.joinToString(" · ")
                             if (meta.isNotEmpty()) Text(meta, style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant, maxLines = 2, overflow = TextOverflow.Ellipsis)
                         }
                         when {
-                            r.source == LibSource.JOURNALS -> IconButton({ onOpenUrl(r.url) }) { Icon(Icons.Rounded.OpenInNew, "Buka di browser", tint = cs.primary) }
+                            r.source != LibSource.BOOKS -> IconButton({ onOpenUrl(r.url) }) { Icon(Icons.Rounded.OpenInNew, "Buka di aplikasi", tint = cs.primary) }
                             saved -> Icon(Icons.Rounded.CloudDone, "Sudah diunduh", tint = cs.secondary)
                             prog != null -> if (prog >= 0f) ProgressRing(prog, 36.dp, 4.dp, cs.secondary) else CircularProgressIndicator(Modifier.size(28.dp), strokeWidth = 3.dp)
                             else -> Row {

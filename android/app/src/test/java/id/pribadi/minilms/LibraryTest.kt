@@ -95,3 +95,35 @@ class LibraryTest {
         assertNull(WebPolicy.hostOf("file:///etc/passwd"))
     }
 }
+
+class CampusRepoTest {
+    // potongan nyata dari halaman hasil EPrints (UMS)
+    private val html = """<table><tr class="ep_search_result">
+    <td>1.</td><td>
+    <span class="person_name">Partini, Partini</span> and <span class="person_name">, Dra. Titik, S.E., M.Si</span>
+(2018)
+<a href="https://eprints.ums.ac.id/60144/"><em>Minat  Mahasiswa &amp; Manajemen
+ Keuangan.</em></a>
+    Skripsi thesis, Universitas Muhammadiyah Surakarta.
+  </td></tr>
+  <tr class="ep_search_result"><td>2.</td><td><span class="person_name">X</span> (2020) <a href="https://evil.example/9/"><em>Palsu</em></a> t</td></tr>
+  <tr class="ep_search_result"><td>3.</td><td><span class="person_name">Y</span> (2021) <a href="http://eprints.ums.ac.id/7/"><em>Manajemen SDM</em></a> Tesis</td></tr></table>"""
+
+    @Test fun parsesEprintsRowsAndIgnoresForeignHosts() {
+        val r = LibraryApi.parseEprints(html, "eprints.ums.ac.id")
+        assertEquals(listOf("Minat Mahasiswa & Manajemen Keuangan", "Manajemen SDM"), r.map { it.title })
+        assertEquals("Partini, Partini, Dra. Titik, S.E., M.Si", r[0].author); assertEquals("2018", r[0].year)
+        assertEquals("Skripsi thesis, Universitas Muhammadiyah Surakarta", r[0].note)
+        assertEquals("https://eprints.ums.ac.id/7/", r[1].url)           // http dinaikkan ke https
+        assertTrue(r.all { it.source == LibSource.CAMPUS })
+    }
+
+    @Test fun campusSearchUrlAndTrustedHosts() {
+        var asked = ""
+        LibraryApi.http = HttpGet { asked = it; html }
+        assertEquals(2, LibraryApi.search(LibSource.CAMPUS, "manajemen keuangan", LibraryApi.campuses[0]).size)
+        assertTrue(asked.startsWith("https://eprints.ums.ac.id/cgi/search/archive/simple?q=manajemen+keuangan&_action_search=Search"))
+        assertTrue(LibraryApi.campuses.all { PublicHttp.trustedHost(it.host) })
+        assertTrue(MANAGEMENT_TOPICS.contains("manajemen pemasaran"))
+    }
+}

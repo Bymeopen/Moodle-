@@ -271,7 +271,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     // ---------- perpustakaan online gratis ----------
     data class LibState(
-        val source: LibSource = LibSource.BOOKS, val query: String = "", val results: List<LibItem> = emptyList(), val searching: Boolean = false,
+        val source: LibSource = LibSource.BOOKS, val campus: Campus = LibraryApi.campuses[0], val query: String = "", val results: List<LibItem> = emptyList(), val searching: Boolean = false,
         val searched: Boolean = false, val error: String? = null, val saved: List<LibSaved> = emptyList(),
         val downloading: Map<String, Float> = emptyMap(),      // id -> 0..1 (-1 = belum diketahui)
     )
@@ -281,14 +281,15 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private var libJob: kotlinx.coroutines.Job? = null
 
     fun libraryLoad() { viewModelScope.launch { val l = withContext(Dispatchers.IO) { libStore.list() }; _lib.update { it.copy(saved = l) } } }
+    fun libraryCampus(c: Campus) { _lib.update { it.copy(campus = c, results = emptyList(), searched = false, error = null) } }
     fun librarySource(s: LibSource) { _lib.update { it.copy(source = s, results = emptyList(), searched = false, error = null) } }
 
     fun librarySearch(q: String) {
         libJob?.cancel()
-        val src = _lib.value.source
+        val src = _lib.value.source; val campus = _lib.value.campus
         _lib.update { it.copy(query = q, searching = true, error = null) }
         libJob = viewModelScope.launch {
-            val r = try { withContext(Dispatchers.IO) { LibraryApi.search(src, q) } }
+            val r = try { withContext(Dispatchers.IO) { LibraryApi.search(src, q, campus) } }
                 catch (e: kotlinx.coroutines.CancellationException) { throw e }
                 catch (e: Exception) { _lib.update { it.copy(searching = false, error = "Pencarian gagal: ${e.message ?: "periksa internet"}") }; return@launch }
             _lib.update { it.copy(results = r, searching = false, searched = true) }

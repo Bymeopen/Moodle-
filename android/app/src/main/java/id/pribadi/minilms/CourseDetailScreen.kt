@@ -165,13 +165,21 @@ private fun MaterialCard(it: Item, isDownloaded: (Item, FileRef) -> Boolean, fil
     var open by rememberSaveable(it.id) { mutableStateOf(false) }
     val cs = MaterialTheme.colorScheme
     val hasText = (it.type == "page" || it.type == "forum") && it.content.isNotBlank()
-    Card2(Modifier.fillMaxWidth().padding(horizontal = 20.dp).animateContentSize(), if (hasText) ({ open = !open }) else null) {
+    // Modul tanpa file (tautan luar, presensi, H5P, SCORM, rekaman, dll.): seluruh kartu membuka tujuannya di dalam aplikasi.
+    // Tautan ke halaman Moodle sendiri (sama dengan it.url) harus lewat autologin, bukan URL biasa (akan meminta login).
+    val target: (() -> Unit)? = when {
+        it.type != "link" || it.files.isNotEmpty() -> null
+        it.content.startsWith("http") && it.content != it.url -> ({ onLink(it.content) })
+        it.url.isNotEmpty() -> ({ onOpenMoodle(it.url) })
+        else -> null
+    }
+    Card2(Modifier.fillMaxWidth().padding(horizontal = 20.dp).animateContentSize(), if (hasText) ({ open = !open }) else target) {
         Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 IconBadge(when (it.type) { "page" -> Icons.Rounded.Article; "forum" -> Icons.Rounded.Forum; else -> Icons.Rounded.Link }, if (it.type == "page" || it.type == "forum") cs.tertiary else cs.primary, size = 36.dp)
                 Text(it.title, Modifier.weight(1f), style = MaterialTheme.typography.titleSmall, maxLines = 3, overflow = TextOverflow.Ellipsis)
                 if (hasText) Icon(if (open) Icons.Rounded.ExpandLess else Icons.Rounded.ExpandMore, null, tint = cs.outline)
-                else if (it.type == "link" && it.files.isEmpty() && it.content.startsWith("http")) IconButton({ onLink(it.content) }) { Icon(Icons.Rounded.OpenInNew, "Buka di aplikasi", tint = cs.primary) }
+                else if (target != null) Icon(Icons.Rounded.OpenInNew, "Buka di aplikasi", tint = cs.primary)
             }
             if (hasText) {
                 if (open) Text(it.content, style = MaterialTheme.typography.bodyMedium, color = cs.onSurface)
@@ -179,9 +187,6 @@ private fun MaterialCard(it: Item, isDownloaded: (Item, FileRef) -> Boolean, fil
             }
             it.files.forEach { f -> FileRow(it, f, isDownloaded(it, f), progress[fileKey(it, f)], onOpenFile, onDownloadFile) }
             if (it.type == "forum" && it.url.isNotEmpty()) OutlinedButton({ onOpenMoodle(it.url) }, Modifier.fillMaxWidth()) { Icon(Icons.Rounded.Forum, null, Modifier.size(18.dp)); Spacer(Modifier.width(8.dp)); Text("Buka forum / balas") }
-            // Modul Moodle tanpa file/tautan luar (video terpasang, forum, dll.): buka halaman aslinya dengan login otomatis.
-            if (it.type == "link" && it.files.isEmpty() && !it.content.startsWith("http") && it.url.isNotEmpty())
-                OutlinedButton({ onOpenMoodle(it.url) }, Modifier.fillMaxWidth()) { Icon(Icons.Rounded.OpenInNew, null, Modifier.size(18.dp)); Spacer(Modifier.width(8.dp)); Text("Buka di Moodle") }
         }
     }
 }

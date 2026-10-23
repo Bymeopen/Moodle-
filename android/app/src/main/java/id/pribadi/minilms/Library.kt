@@ -11,7 +11,14 @@ import java.net.URLEncoder
 enum class LibSource(val label: String, val hint: String) {
     BOOKS("Buku", "Internet Archive: buku domain publik & terbuka (PDF bisa diunduh)"),
     JOURNALS("Jurnal", "DOAJ: artikel jurnal akses terbuka (dibuka di browser)"),
+    CAMPUS("Repositori PTM", "Skripsi, tesis, dan artikel dosen dari repositori perguruan tinggi Muhammadiyah. Sebagian hanya menampilkan abstrak/bab awal."),
 }
+
+/** Repositori EPrints perguruan tinggi Muhammadiyah. [verified] = sudah dicoba berhasil diakses dari aplikasi; lainnya mungkin menolak akses non-browser. */
+data class Campus(val name: String, val host: String, val verified: Boolean = false)
+
+/** Topik jurusan manajemen untuk pencarian cepat. */
+val MANAGEMENT_TOPICS = listOf("manajemen", "manajemen keuangan", "manajemen pemasaran", "manajemen sumber daya manusia", "kewirausahaan", "akuntansi", "perilaku organisasi", "bisnis")
 
 /** Satu hasil pencarian. [id] = identifier Internet Archive (BOOKS) atau id DOAJ; [url] = halaman/teks lengkap untuk dibuka di browser. */
 data class LibItem(val source: LibSource, val id: String, val title: String, val author: String, val year: String, val note: String, val url: String)
@@ -24,12 +31,37 @@ fun interface HttpGet { fun get(url: String): String }
 
 object LibraryApi {
     var http: HttpGet = HttpGet { PublicHttp.getText(it) }
+
+    val campuses = listOf(
+        Campus("UMS Surakarta", "eprints.ums.ac.id", true), Campus("UMG Gresik", "eprints.umg.ac.id", true), Campus("UM Surabaya", "repository.um-surabaya.ac.id", true),
+        Campus("UMM Malang", "eprints.umm.ac.id"), Campus("UAD Yogyakarta", "eprints.uad.ac.id"), Campus("UMSIDA Sidoarjo", "eprints.umsida.ac.id"), Campus("UHAMKA Jakarta", "repository.uhamka.ac.id"),
+    )
+
+    /** Hasil pencarian halaman EPrints standar (daftar `ep_search_result`): judul, penulis, tahun, jenis; hanya tautan di host kampus itu sendiri. */
+    fun parseEprints(html: String, host: String): List<LibItem> {
+        val linkRe = Regex("""<a href="https?://${Regex.escape(host)}/(\d+)/"><em>(.*?)</em></a>(.*?)(?=</td>)""", RegexOption.DOT_MATCHES_ALL)
+        return html.split("class=\"ep_search_result\"").drop(1).mapNotNull { row ->
+            val m = linkRe.find(row) ?: return@mapNotNull null
+            val authors = Regex("""person_name">([^<]*)<""").findAll(row.substring(0, m.range.first)).map { clean(it.groupValues[1]).trim(' ', ',') }.filter { it.isNotEmpty() }.joinToString(", ")
+            val year = Regex("""\((\d{4})\)""").find(row.substring(0, m.range.first))?.groupValues?.get(1).orEmpty()
+            LibItem(LibSource.CAMPUS, "$host/${m.groupValues[1]}", clean(m.groupValues[2]).trimEnd('.'), authors, year, clean(m.groupValues[3]).trim(' ', ',', '.'), "https://$host/${m.groupValues[1]}/")
+        }
+    }
+
+    private fun clean(s: String) = s.replace(Regex("<[^>]+>"), " ").replace("&amp;", "&").replace("&quot;", "\"").replace("&#39;", "'").replace("&lt;", "<").replace("&gt;", ">").replace(Regex("\\s+"), " ").trim()
+
+    fun searchCampus(c: Campus, query: String): List<LibItem> {
+        val q = query.trim()
+        if (q.isEmpty()) return emptyList()
+        return parseEprints(http.get("https://${c.host}/cgi/search/archive/simple?q=${enc(q)}&_action_search=Search&order=${enc("-date/creators_name/title")}"), c.host).take(25)
+    }
     private fun enc(s: String) = URLEncoder.encode(s, "UTF-8")
 
-    fun search(source: LibSource, query: String): List<LibItem> {
+    fun search(source: LibSource, query: String, campus: Campus = campuses[0]): List<LibItem> {
         val q = query.trim()
         if (q.isEmpty()) return emptyList()
         return when (source) {
+            LibSource.CAMPUS -> searchCampus(campus, q)
             LibSource.BOOKS -> parseArchive(http.get("https://archive.org/advancedsearch.php?q=${enc("($q) AND mediatype:texts AND access-restricted-item:false")}&fl[]=identifier&fl[]=title&fl[]=creator&fl[]=year&sort[]=downloads+desc&rows=25&output=json"))
             LibSource.JOURNALS -> parseDoaj(http.get("https://doaj.org/api/search/articles/${enc(q)}?pageSize=25"))
         }
@@ -73,7 +105,7 @@ object LibraryApi {
 
 /** HTTP GET publik: hanya https, alihan diikuti manual maksimal 4 kali dan hanya ke host tepercaya. */
 object PublicHttp {
-    private val trusted = listOf("archive.org", "doaj.org")
+    private val trusted = listOf("archive.org", "doaj.org") + LibraryApi.campuses.map { it.host }
     fun trustedHost(host: String) = trusted.any { host == it || host.endsWith(".$it") }
 
     private fun open(start: String): HttpURLConnection {
