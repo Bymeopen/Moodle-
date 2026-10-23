@@ -51,6 +51,10 @@ test('htmlToText & penolakan URL tidak aman', async () => {
     await assert.rejects(normalizeBaseUrl('https://127.0.0.1'), /internal/);
     await assert.rejects(normalizeBaseUrl('https://[::1]'), /internal/);
     await assert.rejects(normalizeBaseUrl('https://169.254.169.254/latest'), /internal/); // metadata cloud
+    await assert.rejects(normalizeBaseUrl('https://[::ffff:127.0.0.1]'), /internal/);
+    // alamat publik harus lolos (regresi: aturan IPv6 pernah memblokir semua IPv4)
+    assert.equal(await normalizeBaseUrl('https://143.198.212.12/'), 'https://143.198.212.12');
+    assert.equal(await normalizeBaseUrl('https://8.8.8.8/moodle/'), 'https://8.8.8.8/moodle');
   } finally { process.env.MOODLE_ALLOW_PRIVATE = 'true'; }
 });
 

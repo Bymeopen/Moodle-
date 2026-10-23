@@ -7,7 +7,15 @@ export class MoodleError extends Error {}
 const PRIVATE = new BlockList();
 for (const [net, bits] of [['0.0.0.0', 8], ['10.0.0.0', 8], ['100.64.0.0', 10], ['127.0.0.0', 8], ['169.254.0.0', 16], ['172.16.0.0', 12], ['192.168.0.0', 16]])
   PRIVATE.addSubnet(net, bits, 'ipv4');
-for (const [net, bits] of [['::1', 128], ['fc00::', 7], ['fe80::', 10], ['::ffff:0:0', 96]]) PRIVATE.addSubnet(net, bits, 'ipv6');
+// catatan: JANGAN tambah ::ffff:0:0/96 di sini; BlockList menganggap semua IPv4 sebagai IPv4-mapped sehingga memblokir semuanya
+for (const [net, bits] of [['::1', 128], ['fc00::', 7], ['fe80::', 10]]) PRIVATE.addSubnet(net, bits, 'ipv6');
+
+const isPrivateAddr = (address, family) => {
+  // IPv6 bentuk ::ffff:a.b.c.d diperiksa sebagai IPv4-nya
+  const mapped = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/i.exec(address);
+  if (mapped) return PRIVATE.check(mapped[1], 'ipv4');
+  return PRIVATE.check(address, family === 6 ? 'ipv6' : 'ipv4');
+};
 
 /** Validasi alamat Moodle; kembalikan base URL tanpa slash akhir. MOODLE_ALLOW_PRIVATE=true untuk dev/test. */
 export async function normalizeBaseUrl(raw) {
@@ -20,7 +28,7 @@ export async function normalizeBaseUrl(raw) {
     const addrs = isIP(host)
       ? [{ address: host, family: isIP(host) }]
       : await lookup(host, { all: true }).catch(() => { throw new MoodleError('Host Moodle tidak ditemukan'); });
-    if (addrs.some((a) => PRIVATE.check(a.address, a.family === 6 ? 'ipv6' : 'ipv4'))) throw new MoodleError('Alamat jaringan internal tidak diizinkan');
+    if (addrs.some((a) => isPrivateAddr(a.address, a.family))) throw new MoodleError('Alamat jaringan internal tidak diizinkan');
   }
   return u.origin + u.pathname.replace(/\/+$/, '');
 }
