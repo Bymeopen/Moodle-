@@ -48,12 +48,17 @@ Aktif bila `ANTHROPIC_API_KEY` di-set (model default `claude-opus-5-5`, ubah via
 
 Catatan keamanan: jawaban siswa dan materi dikirim sebagai data (dibungkus tag, system prompt melarang mengikuti instruksi di dalamnya); output model divalidasi ulang di server; nilai dibatasi ke `max_grade`.
 
-## Aplikasi Android (APK)
-`android/` berisi pembungkus WebView tanpa dependensi (hanya framework Android). APK hanyalah klien: **server tetap harus berjalan** (`npm start` di PC/VPS) dan bisa dijangkau dari ponsel. Pada pembukaan pertama, isi alamat server (mis. `http://192.168.1.10:3000`); ganti lewat menu titik tiga → "Ganti server".
+## Aplikasi Android (native, tanpa server)
+`android/` adalah aplikasi Kotlin + Jetpack Compose yang terhubung **langsung** ke Moodle kampus lewat Web Service resmi (seperti Moodle Mobile). Server Node di atas tidak diperlukan.
 
-Build (butuh JDK 17+, Gradle 8.x, Android SDK platform 34 + build-tools 34):
+- Login SSO/Google otomatis: aplikasi membuka tautan resmi `launch.php` dan menangkap callback `moodlemobile://token=...` (tanda tangan md5(url+passport) diverifikasi). Alternatif: tempel token, atau username+password.
+- Tab Kursus: kartu kursus dengan progres unduhan, **Unduh semua** (WorkManager + notifikasi progres, jeda/lanjut, opsi hanya Wi-Fi), detail kursus per bagian, buka file dengan aplikasi PDF/dokumen bawaan.
+- Tab Tenggat, Nilai, dan Lainnya (penyimpanan, hapus unduhan, pengingat tenggat 24 jam, keluar).
+- Semua data di penyimpanan privat aplikasi. Token tidak dikirim lewat URL; file hanya diunduh dari host Moodle yang sama.
+
+Build (JDK 17+, Gradle 8.x, Android SDK platform 34 + build-tools 34):
 ```bash
 cd android && echo "sdk.dir=$HOME/android-sdk" > local.properties
-gradle assembleDebug     # hasil: app/build/outputs/apk/debug/app-debug.apk
+gradle testDebugUnitTest assembleDebug   # APK: app/build/outputs/apk/debug/app-debug.apk
 ```
-APK debug ditandatangani kunci debug lokal; membangun ulang di mesin lain memakai kunci berbeda sehingga pembaruan di atas versi lama harus uninstall dulu. Unduhan file memakai tiket sekali pakai dan tersimpan di folder Unduhan ponsel. `usesCleartextTraffic` aktif agar server `http://` di LAN bisa dipakai; gunakan HTTPS bila server di internet.
+APK debug memakai kunci debug lokal; membangun ulang di mesin lain memakai kunci berbeda sehingga pembaruan harus uninstall dulu. Belum ada: pesan/forum, kuis, pengumpulan tugas, kartu hafalan di aplikasi.
