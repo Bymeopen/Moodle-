@@ -21,6 +21,7 @@ class AgentTest {
         override fun markDone(itemId: Long, done: Boolean) { log += "done:$itemId:$done" }
         override fun openPage(url: String) = "dibuka".also { log += "open:$url" }
         override fun addCards(courseId: Long, cards: List<Draft>) = "OK ${cards.size}".also { log += "cards:${cards.size}" }
+        override fun exportPack(courseId: Long) = "Paket siap".also { log += "pack:$courseId" }
         override fun librarySearch(source: LibSource, query: String) = listOf(LibItem(source, "x", "Jurnal $query", "A", "2020", "", "https://j.id/1")).also { log += "lib:${source.name}" }
     }
 
@@ -69,7 +70,9 @@ class AgentTest {
         assertTrue(call(t, "create_flashcards", """{"course_id":11,"cards":[{"front":"A","back":"B"},{"front":"","back":"x"},{"front":"C"}]}""").startsWith("OK 1"))
         assertTrue(call(t, "create_flashcards", """{"course_id":11,"cards":[]}""").startsWith("Galat"))
         call(t, "library_search", """{"source":"campus","query":"manajemen"}""")
-        assertEquals(listOf("sync", "dl:11", "done:5:true", "open:https://lms/q", "cards:1", "lib:CAMPUS"), acts.log)
+        assertEquals("Paket siap", call(t, "export_study_pack", """{"course_id":11}"""))
+        assertTrue(call(t, "export_study_pack", """{"course_id":404}""").startsWith("Galat"))
+        assertEquals(listOf("sync", "dl:11", "done:5:true", "open:https://lms/q", "cards:1", "lib:CAMPUS", "pack:11"), acts.log)
     }
 
     @Test fun noToolSubmitsWorkOrTakesQuizzes() {

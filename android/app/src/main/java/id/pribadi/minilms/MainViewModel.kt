@@ -19,7 +19,6 @@ import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-const val NOTEBOOK_MAX_SOURCES = 50
 private const val STALE_SECONDS = 30 * 60L
 
 data class DlState(val running: Boolean = false, val done: Int = 0, val total: Int = 0, val name: String = "", val bytes: Long = 0, val bytesTotal: Long = 0,
@@ -49,6 +48,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 repo.addCards(cards.map { Card(java.util.UUID.randomUUID().toString(), courseId, it.front, it.back, 2.5, 0, 0, today) }); "OK: ${cards.size} kartu disimpan ke deck"
             } catch (e: java.io.IOException) { "Gagal menyimpan kartu: ${e.message}" }
             override fun librarySearch(source: LibSource, query: String): List<LibItem> = LibraryApi.search(source, query, _lib.value.campus)
+            override fun exportPack(courseId: Long): String { val c = repo.snapshot.value?.courses?.firstOrNull { it.id == courseId } ?: return "Kursus tidak ditemukan"; return sharePackNow(c) }
         }
     }
     val cards = repo.cards
@@ -91,7 +91,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    override fun onCleared() { runCatching { cm?.unregisterNetworkCallback(netCb) } }
+    override fun onCleared() { runCatching { cm?.unregisterNetworkCallback(netCb) }; speaker.shutdown() }
 
     // ---------- unduhan massal (WorkManager) ----------
     val download: StateFlow<DlState> = WorkManager.getInstance(app).getWorkInfosForUniqueWorkFlow(Jobs.name())
@@ -239,34 +239,58 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         } catch (e: ActivityNotFoundException) { _message.value = "Tidak ada aplikasi untuk membuka file ini" }
     }
 
-    /**
-     * Bagikan materi kursus (ringkasan teks .md + file yang sudah diunduh) lewat menu bagikan Android,
-     * supaya bisa ditambahkan sebagai sumber di NotebookLM (atau Google Drive). NotebookLM membatasi jumlah sumber per notebook.
-     */
-    fun shareToNotebook(c: Course) {
+    // ---------- paket belajar (untuk diolah di NotebookLM/Gemini/Claude: podcast, audio, bahan ajar) ----------
+    data class PackSummary(val texts: Int, val chars: Int, val pdfs: Int, val links: Int, val otherFiles: Int, val notDownloaded: Int, val sources: Int, val omitted: Int)
+
+    private class PackFiles(val dir: java.io.File, val texts: List<PackText>, val links: PackText?, val pdfs: List<java.io.File>, val otherFiles: Int, val notDownloaded: Int)
+
+    private fun packFiles(c: Course): PackFiles {
+        val texts = StudyPack.texts(c, fileText = { i, f -> repo.textOf(c.id, i.id, f) })
+        val files = c.items.flatMap { i -> i.files.map { f -> Triple(i, f, repo.isDownloaded(c.id, i.id, f)) } }
+        val pdfs = files.filter { it.third && FileText.isPdf(it.second.name, it.second.mime) }.map { repo.fileOf(c.id, it.first.id, it.second) }
+        val other = files.count { it.third && !FileText.isPdf(it.second.name, it.second.mime) }
+        return PackFiles(java.io.File(repo.root, "${c.id}/_paket"), texts, StudyPack.links(c), pdfs, other, files.count { !it.third })
+    }
+
+    private val _pack = MutableStateFlow<PackSummary?>(null)
+    val pack: StateFlow<PackSummary?> = _pack
+    fun closePack() { _pack.value = null }
+
+    /** Hitung isi paket (tanpa menulis berkas) untuk ditampilkan di dialog. */
+    fun preparePack(c: Course) {
+        _pack.value = null
         viewModelScope.launch {
-            val md = try { withContext(Dispatchers.IO) { java.io.File(repo.root, "${c.id}/${safeName(c.name)}.md").apply { parentFile!!.mkdirs(); writeText(AiMaterial.build(c)) } } }
-                catch (e: java.io.IOException) { _message.value = "Gagal menyiapkan ringkasan: ${e.message}"; return@launch }
-            launchShare(c, md)
+            _pack.value = try { withContext(Dispatchers.IO) {
+                val p = packFiles(c); val (sent, omitted) = StudyPack.limit(p.texts, listOfNotNull(p.links), p.pdfs)
+                PackSummary(p.texts.size, p.texts.sumOf { it.content.length }, p.pdfs.size, if (p.links == null) 0 else c.items.count { it.type == "link" && it.content.startsWith("http") && it.content != it.url },
+                    p.otherFiles, p.notDownloaded, sent.size, omitted)
+            } } catch (e: java.io.IOException) { _message.value = "Gagal menyiapkan paket: ${e.message}"; null }
         }
     }
 
-    private fun launchShare(c: Course, md: java.io.File) {
+    /** Tulis paket ke penyimpanan aplikasi lalu buka menu bagikan Android. Dipanggil dari UI maupun agen; mengembalikan ringkasan teks. */
+    fun sharePackNow(c: Course): String {
         val ctx = getApplication<Application>()
-        val files = c.items.flatMap { i -> i.files.filter { repo.isDownloaded(c.id, i.id, it) }.map { repo.fileOf(c.id, i.id, it) } }
-        val all = listOf(md) + files
-        val sent = all.take(NOTEBOOK_MAX_SOURCES)
-        val uris = ArrayList(sent.map { FileProvider.getUriForFile(ctx, "${ctx.packageName}.files", it) })
-        val send = Intent(Intent.ACTION_SEND_MULTIPLE).setType("*/*").putParcelableArrayListExtra(Intent.EXTRA_STREAM, uris)
-            .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-        // clipData diperlukan agar izin baca ikut diteruskan ke aplikasi tujuan lewat chooser
-        send.clipData = android.content.ClipData.newRawUri(null, uris[0]).also { cd -> uris.drop(1).forEach { cd.addItem(android.content.ClipData.Item(it)) } }
+        val p = try { packFiles(c) } catch (e: java.io.IOException) { return "Gagal menyiapkan paket: ${e.message}" }
+        if (p.texts.isEmpty() && p.links == null && p.pdfs.isEmpty()) return "Kursus ini belum punya materi untuk dibagikan; sinkron atau unduh file dulu."
         try {
-            ctx.startActivity(Intent.createChooser(send, "Bagikan materi ke NotebookLM, Claude, Gemini, atau Drive").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
-            if (all.size > sent.size) _message.value = "Hanya $NOTEBOOK_MAX_SOURCES sumber pertama yang dikirim (batas NotebookLM)"
-            else if (files.isEmpty()) _message.value = "Hanya ringkasan teks yang dikirim; unduh file kursus dulu untuk menyertakan PDF/slide"
-        } catch (e: ActivityNotFoundException) { _message.value = "Tidak ada aplikasi untuk menerima file" }
+            p.dir.deleteRecursively(); p.dir.mkdirs()
+            val written = (p.texts + listOfNotNull(p.links)).map { t -> java.io.File(p.dir, safeName(t.name)).also { it.writeText(t.content) } }
+            val (sent, omitted) = StudyPack.limit(written, emptyList(), p.pdfs)
+            val uris = ArrayList(sent.map { FileProvider.getUriForFile(ctx, "${ctx.packageName}.files", it) })
+            val send = Intent(Intent.ACTION_SEND_MULTIPLE).setType("*/*").putParcelableArrayListExtra(Intent.EXTRA_STREAM, uris).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            send.clipData = android.content.ClipData.newRawUri(null, uris[0]).also { cd -> uris.drop(1).forEach { cd.addItem(android.content.ClipData.Item(it)) } }     // izin baca ikut lewat chooser
+            ctx.startActivity(Intent.createChooser(send, "Bagikan paket belajar ke NotebookLM, Gemini, Claude, atau Drive").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+            return "Paket belajar siap: ${sent.size} sumber (${p.texts.size} teks, ${if (p.links != null) 1 else 0} tautan, ${p.pdfs.size.coerceAtMost(sent.size)} PDF)" + if (omitted > 0) "; $omitted sumber tidak muat batas ${StudyPack.MAX_SOURCES}" else ""
+        } catch (e: java.io.IOException) { return "Gagal menulis paket: ${e.message}" }
+        catch (e: ActivityNotFoundException) { return "Tidak ada aplikasi untuk menerima file" }
     }
+
+    fun sharePack(c: Course) { viewModelScope.launch { val r = withContext(Dispatchers.IO) { sharePackNow(c) }; _message.value = r; _pack.value = null } }
+
+    // ---------- suara (Text-to-Speech) ----------
+    val speaker = Speaker(app) { _message.value = it }
+    val speaking = speaker.speaking
 
     /** Tulis ZIP kursus ke lokasi pilihan pengguna (Storage Access Framework; tanpa izin penyimpanan). */
     fun exportZip(c: Course, uri: Uri) = launchBusy {

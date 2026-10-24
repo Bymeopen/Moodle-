@@ -30,13 +30,14 @@ fun CourseDetailScreen(vm: MainViewModel, c: Course, st: Repo.CourseStats, onBac
     val dl by vm.download.collectAsStateWithLifecycle()
     val progress by vm.fileProgress.collectAsStateWithLifecycle()
     val done by vm.doneAssignments.collectAsStateWithLifecycle()
+    val pack by vm.pack.collectAsStateWithLifecycle()
     val zip = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/zip")) { uri -> if (uri != null) vm.exportZip(c, uri) }
     val nowSec by rememberNowSec(tick)
     CourseDetailContent(c, st, nowSec, done, dl, progress,
         isDownloaded = { i, f -> tick >= 0 && vm.repo.isDownloaded(c.id, i.id, f) }, fileKey = { i, f -> vm.repo.fileKey(c.id, i.id, f) },
         onBack = onBack, onDownloadCourse = { vm.downloadCourse(c.id) }, onPause = vm::pause, onDeleteDownloads = { vm.deleteDownloads(c.id) },
         onOpenFile = { i, f -> vm.open(c, i, f) }, onDownloadFile = { i, f -> vm.downloadFile(c, i, f) }, onLink = vm::openInApp, onOpenMoodle = vm::openMoodle, onYoutube = vm::openYoutubeApp, onToggleDone = vm::toggleDone,
-        onAskAi = onAskAi, onExportZip = { zip.launch("${safeName(c.name)}.zip") }, onShareNotebook = { vm.shareToNotebook(c) }, onOpenWeb = vm::openWeb)
+        onAskAi = onAskAi, onExportZip = { zip.launch("${safeName(c.name)}.zip") }, onShareNotebook = { vm.preparePack(c) }, onOpenWeb = vm::openWeb, pack = pack, onSharePack = { vm.sharePack(c) }, onClosePack = vm::closePack)
 }
 
 private enum class DetailTab(val label: String) { MATERI("Materi"), TUGAS("Tugas"), NILAI("Nilai") }
@@ -48,6 +49,7 @@ fun CourseDetailContent(
     onBack: () -> Unit, onDownloadCourse: () -> Unit, onPause: () -> Unit, onDeleteDownloads: () -> Unit,
     onOpenFile: (Item, FileRef) -> Unit, onDownloadFile: (Item, FileRef) -> Unit, onLink: (String) -> Unit, onOpenMoodle: (String) -> Unit, onYoutube: (String) -> Unit = {}, onToggleDone: (Long) -> Unit,
     onAskAi: (AiMode) -> Unit, onExportZip: () -> Unit, onShareNotebook: () -> Unit, onOpenWeb: (String) -> Unit,
+    pack: MainViewModel.PackSummary? = null, onSharePack: () -> Unit = {}, onClosePack: () -> Unit = {},
 ) {
     var tab by rememberSaveable { mutableStateOf(DetailTab.MATERI) }
     val materials = remember(c) { c.items.filter { !it.isTask } }
@@ -58,6 +60,7 @@ fun CourseDetailContent(
     val (title, term) = Logic.splitTerm(c.name)
     var menu by remember { mutableStateOf(false) }
     var confirmDelete by remember { mutableStateOf(false) }
+    var packDialog by remember { mutableStateOf(false) }
 
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 32.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item {
@@ -68,7 +71,7 @@ fun CourseDetailContent(
                         FilledIconButton({ menu = true }, colors = IconButtonDefaults.filledIconButtonColors(containerColor = Color.Black.copy(0.25f), contentColor = Color.White)) { Icon(Icons.Rounded.MoreVert, "Menu") }
                         DropdownMenu(menu, { menu = false }) {
                             DropdownMenuItem({ Text("Ekspor sebagai ZIP") }, { menu = false; onExportZip() }, leadingIcon = { Icon(Icons.Rounded.FolderZip, null) })
-                            DropdownMenuItem({ Text("Bagikan materi ke aplikasi AI") }, { menu = false; onShareNotebook() }, leadingIcon = { Icon(Icons.Rounded.Share, null) })
+                            DropdownMenuItem({ Text("Paket belajar (podcast, bahan ajar)") }, { menu = false; packDialog = true; onShareNotebook() }, leadingIcon = { Icon(Icons.Rounded.Share, null) })
                             DropdownMenuItem({ Text("Buka Claude (login SSO)") }, { menu = false; onOpenWeb("https://claude.ai") }, leadingIcon = { Icon(Icons.Rounded.OpenInNew, null) })
                             DropdownMenuItem({ Text("Buka Gemini (login Google)") }, { menu = false; onOpenWeb("https://gemini.google.com") }, leadingIcon = { Icon(Icons.Rounded.OpenInNew, null) })
                             DropdownMenuItem({ Text("Buka NotebookLM") }, { menu = false; onOpenWeb("https://notebooklm.google.com") }, leadingIcon = { Icon(Icons.Rounded.OpenInNew, null) })
@@ -144,6 +147,7 @@ fun CourseDetailContent(
             DetailTab.NILAI -> item { GradesPane(c, summary) }
         }
     }
+    if (packDialog) PackDialog(pack, onShare = { packDialog = false; onSharePack() }, onNotebook = { onOpenWeb("https://notebooklm.google.com") }, onDismiss = { packDialog = false; onClosePack() })
     if (confirmDelete) AlertDialog({ confirmDelete = false }, title = { Text("Hapus unduhan kursus ini?") },
         text = { Text("${st.downloaded} file (${Logic.fmtSize(st.downloadedBytes)}) dihapus dari ponsel. Anda bisa mengunduhnya lagi kapan saja.") },
         confirmButton = { TextButton({ confirmDelete = false; onDeleteDownloads() }) { Text("Hapus", color = MaterialTheme.colorScheme.error) } },
@@ -275,4 +279,24 @@ private fun GradesPane(c: Course, s: GradeSummary) {
             }
         }
     }
+}
+
+/** Dialog Paket belajar: isi paket dan cara memakainya di alat lain. Stateless. */
+@Composable
+private fun PackDialog(p: MainViewModel.PackSummary?, onShare: () -> Unit, onNotebook: () -> Unit, onDismiss: () -> Unit) {
+    val cs = MaterialTheme.colorScheme
+    AlertDialog(onDismiss, title = { Text("Paket belajar") }, text = {
+        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            if (p == null) Row(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) { CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp); Text("Menyiapkan…") }
+            else {
+                Text("Isi paket:", style = MaterialTheme.typography.labelLarge)
+                Text("• ${p.texts} sumber teks (${p.chars / 1000}K karakter; materi, instruksi tugas, forum, soal-jawaban tes, isi docx/pptx)\n• ${p.links} tautan (YouTube/situs) dalam satu berkas\n• ${p.pdfs} file PDF terunduh" +
+                    if (p.otherFiles > 0) "\n• ${p.otherFiles} file lain: isinya sudah masuk di sumber teks" else "", style = MaterialTheme.typography.bodyMedium)
+                if (p.notDownloaded > 0) Text("${p.notDownloaded} file belum diunduh dan tidak ikut. Unduh kursus dulu agar PDF-nya masuk.", style = MaterialTheme.typography.bodySmall, color = cs.error)
+                if (p.omitted > 0) Text("${p.omitted} sumber tidak muat (batas ${StudyPack.MAX_SOURCES} per notebook NotebookLM).", style = MaterialTheme.typography.bodySmall, color = cs.error)
+                Text("Cara pakai: bagikan ke NotebookLM (atau Drive), buat notebook baru, lalu minta ringkasan audio/podcast, panduan belajar, atau kuis dari sumber tersebut. Fitur yang tersedia bergantung versi NotebookLM.", style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant)
+            }
+        }
+    }, confirmButton = { TextButton(onShare, enabled = p != null && p.sources > 0) { Text("Bagikan") } },
+        dismissButton = { Row { TextButton(onNotebook) { Text("Buka NotebookLM") }; TextButton(onDismiss) { Text("Tutup") } } })
 }

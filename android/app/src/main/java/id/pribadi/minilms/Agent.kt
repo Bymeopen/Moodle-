@@ -31,6 +31,8 @@ interface LmsActions {
     fun openPage(url: String): String
     fun addCards(courseId: Long, cards: List<Draft>): String
     fun librarySearch(source: LibSource, query: String): List<LibItem>
+    /** Siapkan paket belajar kursus (teks per bagian + tautan + PDF) dan buka menu bagikan. */
+    fun exportPack(courseId: Long): String
 }
 
 /**
@@ -73,6 +75,8 @@ class LmsTools(
             obj("item_id" to int, "done" to """{"type":"boolean"}""", required = listOf("item_id", "done"))),
         ToolSpec("open_page", "Buka halaman Moodle sebuah item (tes, forum, tugas, rekaman) di dalam aplikasi untuk dikerjakan pengguna sendiri.",
             obj("course_id" to int, "item_id" to int, required = listOf("course_id", "item_id"))),
+        ToolSpec("export_study_pack", "Siapkan paket belajar sebuah kursus (sumber teks per bagian, daftar tautan, PDF terunduh) dan buka menu bagikan Android agar pengguna mengirimnya ke NotebookLM (podcast/Audio Overview, panduan belajar), Gemini, Claude, atau Drive.",
+            obj("course_id" to int, required = listOf("course_id"))),
         ToolSpec("create_flashcards", "Simpan kartu hafalan (maks 30) ke deck pengguna untuk sebuah kursus. Tiap kartu: front (pertanyaan singkat) dan back (jawaban ringkas).",
             obj("course_id" to int, "cards" to """{"type":"array","items":{"type":"object","properties":{"front":$str,"back":$str},"required":["front","back"]}}""", required = listOf("course_id", "cards"))),
     )
@@ -85,7 +89,7 @@ class LmsTools(
         "library_search" -> "Mencari di perpustakaan: ${c.args.optString("query").take(40)}"; "sync_now" -> "Sinkron dari Moodle"
         "download_course" -> "Mengunduh kursus ${courseName(c.args.optLong("course_id"))}"
         "mark_task_done" -> (if (c.args.optBoolean("done", true)) "Menandai selesai: " else "Menandai belum selesai: ") + (items().firstOrNull { it.second.id == c.args.optLong("item_id") }?.second?.title ?: "tugas")
-        "open_page" -> "Membuka halaman di aplikasi"; "create_flashcards" -> "Membuat ${c.args.optJSONArray("cards")?.length() ?: 0} kartu hafalan"
+        "open_page" -> "Membuka halaman di aplikasi"; "export_study_pack" -> "Menyiapkan paket belajar ${courseName(c.args.optLong("course_id"))}"; "create_flashcards" -> "Membuat ${c.args.optJSONArray("cards")?.length() ?: 0} kartu hafalan"
         else -> c.name
     }
 
@@ -175,6 +179,7 @@ class LmsTools(
                 val (_, i) = findItem(reqLong("course_id"), reqLong("item_id")) ?: throw IllegalArgumentException("item tidak ditemukan")
                 if (i.url.isEmpty()) "Item ini tidak punya halaman Moodle." else actions.openPage(i.url)
             }
+            "export_study_pack" -> actions.exportPack(course().id)
             "create_flashcards" -> {
                 val c = course(); val arr = a.optJSONArray("cards") ?: throw IllegalArgumentException("cards wajib")
                 val cards = (0 until minOf(arr.length(), 30)).mapNotNull { arr.optJSONObject(it) }.map { Draft(it.optString("front").trim(), it.optString("back").trim()) }

@@ -39,7 +39,7 @@ data class AiState(
     val hasKey: Boolean, val provider: Provider, val keys: Set<Provider>, val model: String, val mode: AiMode, val courses: List<Course>, val courseId: Long?, val socratic: Boolean,
     val chat: List<ChatMsg>, val busy: Boolean, val error: String?, val summary: String, val quiz: List<Quiz>, val draft: List<Draft>,
     val cards: List<Card>, val pdfs: List<PdfSource>, val selected: Set<String>, val sessionUsage: Usage, val suggestions: List<String>,
-    val agent: Boolean = false,
+    val agent: Boolean = false, val speaking: Boolean = false,
 )
 
 class AiActions(
@@ -47,7 +47,7 @@ class AiActions(
     val stop: () -> Unit = {}, val newChat: () -> Unit = {}, val setSocratic: (Boolean) -> Unit = {}, val retry: () -> Unit = {},
     val summarize: () -> Unit = {}, val makeQuiz: () -> Unit = {}, val makeCards: () -> Unit = {}, val saveDraft: () -> Unit = {}, val discardDraft: () -> Unit = {},
     val togglePdf: (String) -> Unit = {}, val deleteCard: (String) -> Unit = {}, val review: () -> Unit = {},
-    val setAgent: (Boolean) -> Unit = {},
+    val setAgent: (Boolean) -> Unit = {}, val speak: (String) -> Unit = {}, val stopSpeak: () -> Unit = {},
 )
 
 @Composable
@@ -58,17 +58,17 @@ fun AiScreen(vm: MainViewModel, onReview: () -> Unit) {
     val cards by vm.cards.collectAsStateWithLifecycle()
     val hasKey by ai.hasKey.collectAsStateWithLifecycle(); val model by ai.model.collectAsStateWithLifecycle()
     val provider by ai.provider.collectAsStateWithLifecycle(); val keys by ai.keys.collectAsStateWithLifecycle()
-    val mode by ai.mode.collectAsStateWithLifecycle(); val cid by ai.courseId.collectAsStateWithLifecycle(); val soc by ai.socratic.collectAsStateWithLifecycle(); val agentOn by ai.agent.collectAsStateWithLifecycle()
+    val mode by ai.mode.collectAsStateWithLifecycle(); val cid by ai.courseId.collectAsStateWithLifecycle(); val soc by ai.socratic.collectAsStateWithLifecycle(); val agentOn by ai.agent.collectAsStateWithLifecycle(); val speaking by vm.speaking.collectAsStateWithLifecycle()
     val chat by ai.chat.collectAsStateWithLifecycle(); val busy by ai.busy.collectAsStateWithLifecycle(); val err by ai.error.collectAsStateWithLifecycle()
     val summary by ai.summary.collectAsStateWithLifecycle(); val quiz by ai.quiz.collectAsStateWithLifecycle(); val draft by ai.draft.collectAsStateWithLifecycle()
     val sel by ai.selected.collectAsStateWithLifecycle(); val usage by ai.sessionUsage.collectAsStateWithLifecycle()
     val courses = snap?.courses.orEmpty()
     val course = courses.firstOrNull { it.id == cid }
     val pdfs = remember(course, tick) { course?.let { ai.pdfsOf(it) }.orEmpty() }
-    val state = AiState(hasKey, provider, keys, model, mode, courses, cid, soc, chat, busy, err, summary, quiz, draft, cards, pdfs, sel, usage, ai.suggestions(course != null), agentOn)
+    val state = AiState(hasKey, provider, keys, model, mode, courses, cid, soc, chat, busy, err, summary, quiz, draft, cards, pdfs, sel, usage, ai.suggestions(course != null), agentOn, speaking)
     val actions = remember(ai) {
         AiActions({ ai.setKey(it) }, ai::setProvider, vm::openLink, ai::selectCourse, { ai.mode.value = it }, ai::send, ai::stop, ai::newChat, { ai.socratic.value = it }, ai::retry,
-            ai::summarize, { ai.makeQuiz() }, { ai.makeCards() }, ai::saveDraft, ai::discardDraft, ai::toggle, vm::deleteCard, onReview, ai::setAgent)
+            ai::summarize, { ai.makeQuiz() }, { ai.makeCards() }, ai::saveDraft, ai::discardDraft, ai::toggle, vm::deleteCard, onReview, ai::setAgent, vm.speaker::speak, vm.speaker::stop)
     }
     AiContent(state, actions)
 }
@@ -203,7 +203,7 @@ private fun ChatPane(s: AiState, a: AiActions) {
             }
         } else {
             LazyColumn(Modifier.weight(1f), state = list, contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
-                items(s.chat.size) { i -> Message(s.chat[i], s.model, s.busy && i == s.chat.lastIndex) }
+                items(s.chat.size) { i -> Message(s.chat[i], s.model, s.busy && i == s.chat.lastIndex, s.speaking, a.speak, a.stopSpeak) }
                 if (!s.sessionUsage.isEmpty) item { Text("Sesi ini " + s.sessionUsage.label(s.model), Modifier.fillMaxWidth(), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.outline, textAlign = TextAlign.Center) }
             }
         }
@@ -212,7 +212,7 @@ private fun ChatPane(s: AiState, a: AiActions) {
 }
 
 @Composable
-private fun Message(m: ChatMsg, model: String, streaming: Boolean) {
+private fun Message(m: ChatMsg, model: String, streaming: Boolean, speaking: Boolean = false, speak: (String) -> Unit = {}, stopSpeak: () -> Unit = {}) {
     val cs = MaterialTheme.colorScheme
     val clip = LocalClipboardManager.current
     if (m.role == "user") {
@@ -231,6 +231,7 @@ private fun Message(m: ChatMsg, model: String, streaming: Boolean) {
                 if (m.text.isEmpty()) { if (streaming) TypingDots() } else MarkdownText(m.text)
                 if (!streaming && m.text.isNotEmpty()) Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(m.usage?.label(model) ?: "", Modifier.weight(1f), style = MaterialTheme.typography.labelSmall, color = cs.outline, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    IconButton({ if (speaking) stopSpeak() else speak(m.text) }, Modifier.size(32.dp)) { Icon(if (speaking) Icons.Rounded.StopCircle else Icons.Rounded.VolumeUp, if (speaking) "Hentikan suara" else "Dengarkan jawaban", Modifier.size(16.dp), tint = cs.outline) }
                     IconButton({ clip.setText(AnnotatedString(m.text)) }, Modifier.size(32.dp)) { Icon(Icons.Rounded.ContentCopy, "Salin jawaban", Modifier.size(16.dp), tint = cs.outline) }
                 }
             }
@@ -280,6 +281,7 @@ private fun SummaryPane(s: AiState, course: Course?, a: AiActions) {
         } else {
             Card2(Modifier.fillMaxWidth()) { MarkdownText(s.summary.ifEmpty { "…" }, Modifier.padding(16.dp)) }
             if (!s.busy) Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                FilledTonalButton({ if (s.speaking) a.stopSpeak() else a.speak(s.summary) }) { Icon(if (s.speaking) Icons.Rounded.StopCircle else Icons.Rounded.VolumeUp, null, Modifier.size(18.dp)); Spacer(Modifier.width(6.dp)); Text(if (s.speaking) "Berhenti" else "Dengarkan") }
                 FilledTonalButton({ clip.setText(AnnotatedString(s.summary)) }) { Icon(Icons.Rounded.ContentCopy, null, Modifier.size(18.dp)); Spacer(Modifier.width(6.dp)); Text("Salin") }
                 OutlinedButton(a.summarize) { Icon(Icons.Rounded.Refresh, null, Modifier.size(18.dp)); Spacer(Modifier.width(6.dp)); Text("Buat ulang") }
             }
