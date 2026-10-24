@@ -21,7 +21,7 @@ fun interface RootRunner { fun run(script: String, timeoutSec: Long): ShResult }
 /** Root lewat `su` (Magisk/KernelSU dll.): skrip dikirim lewat stdin, keluaran digabung dan dibatasi ukurannya. */
 class SuRunner : RootRunner {
     override fun run(script: String, timeoutSec: Long): ShResult {
-        val p = try { ProcessBuilder("su").redirectErrorStream(true).start() } catch (e: IOException) { return ShResult(127, "su tidak ditemukan: ponsel belum root") }
+        val p = try { ProcessBuilder("su").redirectErrorStream(true).start() } catch (e: IOException) { return ShResult(127, "su tidak ditemukan: ponsel belum root, atau aplikasi ini belum diberi izin root (KernelSU/APatch menyembunyikan su sampai Mini LMS diizinkan di manajer root)") }
         val out = StringBuffer()
         val reader = thread(isDaemon = true) {
             try { p.inputStream.bufferedReader().use { r -> val b = CharArray(4096); while (true) { val n = r.read(b); if (n < 0) break; if (out.length < 400_000) out.append(b, 0, n) } } } catch (e: IOException) {}
@@ -68,11 +68,14 @@ object Chroot {
         md.digest().joinToString("") { "%02x".format(it) }
     }
 
+    /** Linux terpasang bila berkas biasa ini ada. Jangan tes `bin/sh`: itu symlink absolut `/bin/busybox` yang di host menunjuk ke Android asli (tidak ada). */
+    fun installedTest(r: String = "\$R") = "[ -f $r/etc/alpine-release ] && [ -f $r/bin/busybox ]"
+
     private const val HEAD = "R=$ROOT\n[ \"\$R\" = \"$ROOT\" ] || exit 9\n"
 
     fun checkScript() = HEAD + """
 echo "UID=${'$'}(id -u)"
-[ -x ${'$'}R/bin/sh ] && echo INSTALLED=1 || echo INSTALLED=0
+${installedTest()} && echo INSTALLED=1 || echo INSTALLED=0
 grep -q " ${'$'}R/dev " /proc/mounts && echo MOUNTED=1 || echo MOUNTED=0
 [ -f ${'$'}R/etc/alpine-release ] && echo "VER=${'$'}(cat ${'$'}R/etc/alpine-release)"
 """
@@ -83,7 +86,7 @@ grep -q " ${'$'}R/dev " /proc/mounts && echo MOUNTED=1 || echo MOUNTED=0
      * Menolak bila ROOT sudah ada (mv akan memasukkan staging ke dalamnya).
      */
     fun installScript(stage: String, modes: String) = HEAD + """
-if [ -x ${'$'}R/bin/sh ]; then echo SUDAH_TERPASANG; exit 0; fi
+if ${installedTest()}; then echo SUDAH_TERPASANG; exit 0; fi
 [ -e ${'$'}R ] && { echo ROOT_SUDAH_ADA; exit 4; }
 [ -d ${shQuote(stage)} ] || { echo STAGE_HILANG; exit 2; }
 mv ${shQuote(stage)} ${'$'}R 2>/dev/null || { mkdir -p ${'$'}R && cp -dpR ${shQuote(stage)}/. ${'$'}R/ || { echo GAGAL_SALIN; exit 3; }; }
@@ -93,7 +96,11 @@ chmod 755 ${'$'}R
 echo OK
 """
 
-    /** Mount idempotent. Materi LMS dan perpustakaan hanya-baca; bila remount read-only gagal, mount itu dibatalkan (tidak dibiarkan bisa ditulis). */
+    /**
+     * Mount idempotent. Materi LMS dan perpustakaan dibuat hanya-baca lewat `busybox mount -o remount,ro,bind` **di dalam chroot**:
+     * `mount` Android (toybox) menangani remount+bind dengan me-remount seluruh partisi /data, jadi tidak boleh dipakai di sisi host.
+     * Bila read-only gagal, mount itu dibatalkan (tidak dibiarkan bisa ditulis). Folder sumber dibuat oleh aplikasi, bukan root.
+     */
     fun mountScript(courses: String, library: String) = HEAD + """
 mkdir -p ${'$'}R/proc ${'$'}R/sys ${'$'}R/dev ${'$'}R/mnt/sdcard ${'$'}R/mnt/lms ${'$'}R/mnt/library ${'$'}R/etc
 grep -q " ${'$'}R/proc " /proc/mounts || mount -t proc proc ${'$'}R/proc
@@ -101,11 +108,14 @@ grep -q " ${'$'}R/sys " /proc/mounts || mount -t sysfs sys ${'$'}R/sys
 grep -q " ${'$'}R/dev " /proc/mounts || mount --bind /dev ${'$'}R/dev
 grep -q " ${'$'}R/mnt/sdcard " /proc/mounts || mount --bind /sdcard ${'$'}R/mnt/sdcard
 if ! grep -q " ${'$'}R/mnt/lms " /proc/mounts; then
-  mount --bind ${shQuote(courses)} ${'$'}R/mnt/lms && { mount -o remount,ro,bind ${'$'}R/mnt/lms || { umount ${'$'}R/mnt/lms; echo "materi LMS tidak di-mount (gagal read-only)"; }; }
+  if [ -d ${shQuote(courses)} ]; then
+    mount --bind ${shQuote(courses)} ${'$'}R/mnt/lms && { chroot ${'$'}R /bin/busybox mount -o remount,ro,bind /mnt/lms || { umount ${'$'}R/mnt/lms; echo "materi LMS tidak di-mount (gagal read-only)"; }; }
+  else echo "folder materi belum ada; unduh kursus dulu"; fi
 fi
 if ! grep -q " ${'$'}R/mnt/library " /proc/mounts; then
-  mkdir -p ${shQuote(library)}
-  mount --bind ${shQuote(library)} ${'$'}R/mnt/library && { mount -o remount,ro,bind ${'$'}R/mnt/library || { umount ${'$'}R/mnt/library; echo "perpustakaan tidak di-mount (gagal read-only)"; }; }
+  if [ -d ${shQuote(library)} ]; then
+    mount --bind ${shQuote(library)} ${'$'}R/mnt/library && { chroot ${'$'}R /bin/busybox mount -o remount,ro,bind /mnt/library || { umount ${'$'}R/mnt/library; echo "perpustakaan tidak di-mount (gagal read-only)"; }; }
+  else echo "folder perpustakaan belum ada"; fi
 fi
 printf 'nameserver 1.1.1.1\nnameserver 8.8.8.8\n' > ${'$'}R/etc/resolv.conf
 """
@@ -163,6 +173,9 @@ class LinuxController(
         }
     }
 
+    /** Folder sumber mount dibuat oleh aplikasi sendiri; kalau dibuat root, pemiliknya jadi root dan aplikasi tak bisa menulis ke sana. */
+    private fun prepareDirs() { coursesDir.mkdirs(); libraryDir.mkdirs() }
+
     private fun statusNow() {
         val r = runner.run(Chroot.checkScript(), 20)
         val kv = r.out.lines().mapNotNull { l -> l.trim().takeIf { it.contains('=') }?.let { it.substringBefore('=') to it.substringAfter('=') } }.toMap()
@@ -203,7 +216,7 @@ class LinuxController(
                 log(r.out.trim()); if (r.exit != 0) { log("Pemasangan gagal (kode ${r.exit})."); return@task }
             } finally { runCatching { TarGz.deleteTree(stage.toPath()) }; modesFile.delete() }
             step("Menyiapkan jaringan dan mount…")
-            val m = runner.run(Chroot.mountScript(coursesDir.absolutePath, libraryDir.absolutePath), 60); if (m.out.isNotBlank()) log(m.out.trim())
+            prepareDirs(); val m = runner.run(Chroot.mountScript(coursesDir.absolutePath, libraryDir.absolutePath), 60); if (m.out.isNotBlank()) log(m.out.trim())
             log("Alpine terpasang.")
         } finally { tar.delete() }
         statusNow()
@@ -217,14 +230,14 @@ class LinuxController(
         return task {
             if (_state.value.rootOk != true) { statusNow(); if (_state.value.rootOk != true) return@task }
             if (!_state.value.installed) { log("Linux belum terpasang."); return@task }
-            step(label); log("$ ${c.take(300)}")
+            step(label); log("$ ${c.take(300)}"); prepareDirs()
             val r = runner.run(Chroot.execScript(c, coursesDir.absolutePath, libraryDir.absolutePath), timeoutSec)
             if (r.out.isNotBlank()) log(r.out.trimEnd()); if (r.exit != 0) log("(kode keluar ${r.exit})")
             statusNow()
         }
     }
 
-    fun mount(): Job? = task { step("Mount…"); val r = runner.run(Chroot.mountScript(coursesDir.absolutePath, libraryDir.absolutePath), 60); log(r.out.trim().ifEmpty { "Mount siap: /mnt/lms (materi, read-only), /mnt/library, /mnt/sdcard" }); statusNow() }
+    fun mount(): Job? = task { step("Mount…"); prepareDirs(); val r = runner.run(Chroot.mountScript(coursesDir.absolutePath, libraryDir.absolutePath), 60); log(r.out.trim().ifEmpty { "Mount siap: /mnt/lms (materi, read-only), /mnt/library, /mnt/sdcard" }); statusNow() }
     fun unmount(): Job? = task { step("Melepas mount…"); val r = runner.run(Chroot.unmountScript(), 60); log(r.out.trim()); statusNow() }
     fun remove(): Job? = task {
         step("Menghapus Linux…"); val r = runner.run(Chroot.removeScript(), 180)

@@ -71,10 +71,33 @@ class ChrootScriptTest {
 
     @Test fun lmsAndLibraryMountedReadOnlyOrNotAtAll() {
         val s = Chroot.mountScript("/data/data/x/files/courses", "/data/data/x/files/library")
-        assertTrue(s.contains("mount -o remount,ro,bind \$R/mnt/lms"))
+        // read-only hanya lewat busybox di DALAM chroot; mount Android (toybox) me-remount seluruh partisi /data untuk remount+bind
+        assertTrue(s.contains("chroot \$R /bin/busybox mount -o remount,ro,bind /mnt/lms"))
+        assertTrue(s.contains("chroot \$R /bin/busybox mount -o remount,ro,bind /mnt/library"))
+        assertFalse(s.lines().any { it.trim().startsWith("mount -o remount") || it.contains("&& mount -o remount") || it.contains("{ mount -o remount") })
         assertTrue(s.contains("umount \$R/mnt/lms; echo \"materi LMS tidak di-mount"))
         assertTrue(s.contains("mount --bind '/data/data/x/files/courses'"))
+        assertTrue(s.contains("[ -d '/data/data/x/files/courses' ]"))                    // sumber harus sudah ada (dibuat aplikasi), tidak dibuat oleh root
+        assertFalse(s.contains("mkdir -p '/data/data"))                                  // root tidak boleh membuat folder di data aplikasi
         assertTrue(Chroot.mountScript("/it's/odd", "/b").contains("'/it'\\''s/odd'"))      // path pun di-quote
+    }
+
+    @Test fun installedDetectionIgnoresAbsoluteSymlinkThatDanglesOnHost() {
+        assumeTrue(File("/bin/sh").exists())
+        val d = java.nio.file.Files.createTempDirectory("rootfs").toFile()
+        File(d, "bin").mkdirs(); File(d, "etc").mkdirs(); File(d, "bin/busybox").writeText("ELF"); File(d, "etc/alpine-release").writeText("3.24.3")
+        java.nio.file.Files.createSymbolicLink(File(d, "bin/sh").toPath(), java.nio.file.Paths.get("/bin/busybox-tidak-ada-di-host"))     // seperti bin/sh -> /bin/busybox saat dilihat dari host
+        fun sh(cmd: String) = ProcessBuilder("/bin/sh", "-c", cmd).start().waitFor()
+        assertNotEquals(0, sh("[ -x ${d.absolutePath}/bin/sh ]"))                       // tes lama: SELALU salah (bug yang terlihat di ponsel)
+        assertEquals(0, sh(Chroot.installedTest(d.absolutePath)))                        // tes baru: benar
+        File(d, "bin/busybox").delete(); assertNotEquals(0, sh(Chroot.installedTest(d.absolutePath)))   // setengah terpasang tidak dianggap terpasang
+        TarGz.deleteTree(d.toPath())
+    }
+
+    @Test fun checkAndInstallScriptsUseRobustDetection() {
+        assertFalse(Chroot.checkScript().contains("-x \$R/bin/sh") || Chroot.installScript("/s", "/m").contains("-x \$R/bin/sh"))
+        assertTrue(Chroot.checkScript().contains(Chroot.installedTest()))
+        assertTrue(Chroot.installScript("/s", "/m").contains("if ${Chroot.installedTest()}; then echo SUDAH_TERPASANG"))
     }
 
     @Test fun userCommandIsOnlyEverAQuotedArgument() {
