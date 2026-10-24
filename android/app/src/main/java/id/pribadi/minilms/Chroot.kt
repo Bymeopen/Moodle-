@@ -77,11 +77,19 @@ grep -q " ${'$'}R/dev " /proc/mounts && echo MOUNTED=1 || echo MOUNTED=0
 [ -f ${'$'}R/etc/alpine-release ] && echo "VER=${'$'}(cat ${'$'}R/etc/alpine-release)"
 """
 
-    fun installScript(tar: String) = HEAD + """
+    /**
+     * Pasang dari folder staging yang sudah diekstrak aplikasi ([TarGz]): pindahkan ke ROOT (atau salin bila beda filesystem),
+     * jadikan milik root (chown -h agar symlink absolut tidak diikuti ke sistem Android asli), lalu terapkan izin dari [modes].
+     * Menolak bila ROOT sudah ada (mv akan memasukkan staging ke dalamnya).
+     */
+    fun installScript(stage: String, modes: String) = HEAD + """
 if [ -x ${'$'}R/bin/sh ]; then echo SUDAH_TERPASANG; exit 0; fi
-mkdir -p ${'$'}R || exit 2
+[ -e ${'$'}R ] && { echo ROOT_SUDAH_ADA; exit 4; }
+[ -d ${shQuote(stage)} ] || { echo STAGE_HILANG; exit 2; }
+mv ${shQuote(stage)} ${'$'}R 2>/dev/null || { mkdir -p ${'$'}R && cp -dpR ${shQuote(stage)}/. ${'$'}R/ || { echo GAGAL_SALIN; exit 3; }; }
+chown -hR 0:0 ${'$'}R
+while read -r m p; do chmod ${'$'}m "${'$'}R/${'$'}p"; done < ${shQuote(modes)}
 chmod 755 ${'$'}R
-tar -xzf ${shQuote(tar)} -C ${'$'}R || { echo GAGAL_EKSTRAK; exit 3; }
 echo OK
 """
 
@@ -136,6 +144,7 @@ class LinuxController(
     private val fetch: (String) -> String = { PublicHttp.getText(it, 400_000) },
     private val download: (String, File, Long, (Long) -> Unit) -> Unit = { url, dest, max, onBytes -> PublicHttp.download(url, dest, max, { false }, onBytes) },
     private val abis: () -> List<String> = { android.os.Build.SUPPORTED_ABIS.toList() },
+    private val extract: (File, File) -> List<Pair<String, Int>> = { src, dest -> TarGz.extract(src, dest) },
 ) {
     private val _state = MutableStateFlow(LinuxState())
     val state: StateFlow<LinuxState> = _state
@@ -158,7 +167,8 @@ class LinuxController(
         val r = runner.run(Chroot.checkScript(), 20)
         val kv = r.out.lines().mapNotNull { l -> l.trim().takeIf { it.contains('=') }?.let { it.substringBefore('=') to it.substringAfter('=') } }.toMap()
         val root = kv["UID"] == "0"
-        _state.update { it.copy(rootOk = root, installed = root && kv["INSTALLED"] == "1", mounted = root && kv["MOUNTED"] == "1", version = kv["VER"].orEmpty()) }
+        val inst = root && kv["INSTALLED"] == "1"
+        _state.update { it.copy(rootOk = root, installed = inst, mounted = inst && kv["MOUNTED"] == "1", version = kv["VER"].orEmpty()) }          // "mount aktif" hanya berarti bila Linux memang terpasang
         if (!root) log("Root tidak tersedia." + if (r.out.isNotBlank()) " (${r.out.trim().take(200)})" else "")
     }
 
@@ -168,6 +178,9 @@ class LinuxController(
         step("Memeriksa root…"); statusNow()
         if (_state.value.rootOk != true) return@task
         if (_state.value.installed) { log("Linux sudah terpasang."); return@task }
+        // sisa pemasangan yang gagal sebelumnya dibersihkan lewat skrip hapus yang aman (menolak bila masih ada mount)
+        val clean = runner.run(Chroot.removeScript(), 120)
+        if (clean.exit != 0) { log("Sisa pemasangan lama tidak bisa dibersihkan: ${clean.out.trim()}"); return@task }
         val arch = Chroot.abiToAlpine(abis()) ?: run { log("Arsitektur CPU tidak didukung: ${abis()}"); return@task }
         step("Mengambil indeks rilis Alpine…")
         val rel = Chroot.parseRelease(fetch(Chroot.releasesBase(arch) + "latest-releases.yaml"), arch) ?: run { log("Indeks rilis Alpine tidak dikenali; dibatalkan."); return@task }
@@ -179,9 +192,16 @@ class LinuxController(
             step("Memverifikasi checksum…")
             if (Chroot.sha256(tar) != rel.sha256) { log("Checksum SHA-256 tidak cocok; berkas dibuang dan tidak dipasang."); return@task }
             log("Checksum cocok.")
-            step("Mengekstrak sebagai root…")
-            val r = runner.run(Chroot.installScript(tar.absolutePath), 240)
-            log(r.out.trim()); if (r.exit != 0) { log("Pemasangan gagal (kode ${r.exit})."); return@task }
+            step("Mengekstrak arsip…")
+            val stage = File(cacheDir, "alpine-stage"); val modesFile = File(cacheDir, "alpine-modes.txt")
+            try {
+                val modes = extract(tar, stage)
+                modesFile.writeText(TarGz.modeManifest(modes))
+                log("Diekstrak: ${modes.size} berkas/folder (symlink absolut dipertahankan).")
+                step("Memasang sebagai root…")
+                val r = runner.run(Chroot.installScript(stage.absolutePath, modesFile.absolutePath), 240)
+                log(r.out.trim()); if (r.exit != 0) { log("Pemasangan gagal (kode ${r.exit})."); return@task }
+            } finally { runCatching { TarGz.deleteTree(stage.toPath()) }; modesFile.delete() }
             step("Menyiapkan jaringan dan mount…")
             val m = runner.run(Chroot.mountScript(coursesDir.absolutePath, libraryDir.absolutePath), 60); if (m.out.isNotBlank()) log(m.out.trim())
             log("Alpine terpasang.")

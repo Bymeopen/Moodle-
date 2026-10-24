@@ -55,7 +55,7 @@ class ChrootScriptTest {
     }
 
     @Test fun everyScriptGuardsRootPath() {
-        listOf(Chroot.checkScript(), Chroot.installScript("/c/a.tar.gz"), Chroot.mountScript("/a", "/b"), Chroot.unmountScript(), Chroot.removeScript(), Chroot.execScript("ls", "/a", "/b")).forEach {
+        listOf(Chroot.checkScript(), Chroot.installScript("/c/stage", "/c/modes.txt"), Chroot.mountScript("/a", "/b"), Chroot.unmountScript(), Chroot.removeScript(), Chroot.execScript("ls", "/a", "/b")).forEach {
             assertTrue(it.startsWith("R=${Chroot.ROOT}\n[ \"\$R\" = \"${Chroot.ROOT}\" ] || exit 9"))
         }
     }
@@ -103,7 +103,7 @@ class LinuxControllerTest {
             scripts += script
             return when {
                 script.contains("echo \"UID=") -> ShResult(0, "UID=$uid\nINSTALLED=${if (installed) 1 else 0}\nMOUNTED=${if (installed) 1 else 0}\n" + if (installed) "VER=3.24.3\n" else "")
-                script.contains("tar -xzf") -> { installed = installedAfterTar; ShResult(0, "OK\n") }
+                script.contains("STAGE_HILANG") -> { installed = installedAfterTar; ShResult(0, "OK\n") }
                 script.contains("chroot \$R") -> ShResult(0, "hasil perintah\n")
                 else -> ShResult(0, "")
             }
@@ -113,7 +113,8 @@ class LinuxControllerTest {
     private fun controller(root: FakeRoot, sha: String = goodSha, abis: List<String> = listOf("arm64-v8a"), onDownload: () -> Unit = {}): LinuxController {
         val dir = kotlin.io.path.createTempDirectory("lx").toFile()
         return LinuxController(CoroutineScope(SupervisorJob() + Dispatchers.Default), dir, File(dir, "courses"), File(dir, "library"), root,
-            fetch = { yaml.replace("%SHA%", sha) }, download = { _, dest, _, onBytes -> onDownload(); dest.writeBytes(payload); onBytes(5) }, abis = { abis })
+            fetch = { yaml.replace("%SHA%", sha) }, download = { _, dest, _, onBytes -> onDownload(); dest.writeBytes(payload); onBytes(5) }, abis = { abis },
+            extract = { _, stage -> stage.mkdirs(); listOf("bin" to 493, "bin/sh" to 493) })
     }
 
     private fun LinuxController.wait(j: kotlinx.coroutines.Job?) { if (j != null) runBlocking { j.join() } }
@@ -123,7 +124,7 @@ class LinuxControllerTest {
         c.wait(c.install())
         val s = c.state.value
         assertTrue(s.installed && s.rootOk == true && !s.busy); assertEquals("3.24.3", s.version)
-        val tarIdx = root.scripts.indexOfFirst { it.contains("tar -xzf") }
+        val tarIdx = root.scripts.indexOfFirst { it.contains("STAGE_HILANG") }
         assertTrue(tarIdx > 0)                                                            // setelah pemeriksaan root
         assertTrue(root.scripts.drop(tarIdx + 1).any { it.contains("mount -t proc") })     // lalu mount
         assertTrue(s.log.any { it.contains("Checksum cocok") })
@@ -132,7 +133,7 @@ class LinuxControllerTest {
     @Test fun checksumMismatchNeverReachesRoot() {
         val root = FakeRoot(); val c = controller(root, sha = "0".repeat(64))
         c.wait(c.install())
-        assertFalse(root.scripts.any { it.contains("tar -xzf") })                          // tidak diekstrak
+        assertFalse(root.scripts.any { it.contains("STAGE_HILANG") })                          // tidak diekstrak
         assertFalse(c.state.value.installed)
         assertTrue(c.state.value.log.any { it.contains("Checksum SHA-256 tidak cocok") })
     }
@@ -141,12 +142,12 @@ class LinuxControllerTest {
         var downloaded = false
         val root = FakeRoot(uid = "2000"); val c = controller(root, onDownload = { downloaded = true })
         c.wait(c.install())
-        assertFalse(downloaded); assertEquals(false, c.state.value.rootOk); assertFalse(root.scripts.any { it.contains("tar -xzf") })
+        assertFalse(downloaded); assertEquals(false, c.state.value.rootOk); assertFalse(root.scripts.any { it.contains("STAGE_HILANG") })
     }
 
     @Test fun unsupportedCpuIsRejected() {
         val root = FakeRoot(); val c = controller(root, abis = listOf("mips"))
-        c.wait(c.install()); assertTrue(c.state.value.log.any { it.contains("tidak didukung") }); assertFalse(root.scripts.any { it.contains("tar -xzf") })
+        c.wait(c.install()); assertTrue(c.state.value.log.any { it.contains("tidak didukung") }); assertFalse(root.scripts.any { it.contains("STAGE_HILANG") })
     }
 
     @Test fun execRunsOnlyWhenInstalledAndLogsOutput() {
@@ -173,5 +174,16 @@ class LinuxControllerTest {
         val dir = kotlin.io.path.createTempDirectory("lx").toFile()
         val c = LinuxController(CoroutineScope(SupervisorJob() + Dispatchers.Default), dir, dir, dir, root, abis = { listOf("arm64-v8a") })
         c.wait(c.remove()); assertTrue(c.state.value.log.any { it.startsWith("Dibatalkan") })
+    }
+}
+
+class ChrootInstallScriptTest {
+    @Test fun installUsesMoveThenRootOwnershipWithoutHostTar() {
+        val s = Chroot.installScript("/data/data/x/cache/alpine-stage", "/data/data/x/cache/alpine-modes.txt")
+        assertFalse(s.contains("tar "))                                            // tar toybox tidak dipakai (menolak symlink absolut)
+        assertTrue(s.contains("chown -hR 0:0 \$R"))                               // -h: symlink absolut tidak diikuti ke sistem Android asli
+        assertTrue(s.indexOf("ROOT_SUDAH_ADA") < s.indexOf("mv "))                // mv tidak boleh memasukkan staging ke ROOT yang sudah ada
+        assertTrue(s.contains("while read -r m p; do chmod \$m \"\$R/\$p\"; done < '/data/data/x/cache/alpine-modes.txt'"))
+        assertTrue(s.contains("cp -dpR"))                                         // cadangan bila mv lintas filesystem gagal
     }
 }
