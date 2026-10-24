@@ -39,6 +39,7 @@ data class AiState(
     val hasKey: Boolean, val provider: Provider, val keys: Set<Provider>, val model: String, val mode: AiMode, val courses: List<Course>, val courseId: Long?, val socratic: Boolean,
     val chat: List<ChatMsg>, val busy: Boolean, val error: String?, val summary: String, val quiz: List<Quiz>, val draft: List<Draft>,
     val cards: List<Card>, val pdfs: List<PdfSource>, val selected: Set<String>, val sessionUsage: Usage, val suggestions: List<String>,
+    val agent: Boolean = false,
 )
 
 class AiActions(
@@ -46,6 +47,7 @@ class AiActions(
     val stop: () -> Unit = {}, val newChat: () -> Unit = {}, val setSocratic: (Boolean) -> Unit = {}, val retry: () -> Unit = {},
     val summarize: () -> Unit = {}, val makeQuiz: () -> Unit = {}, val makeCards: () -> Unit = {}, val saveDraft: () -> Unit = {}, val discardDraft: () -> Unit = {},
     val togglePdf: (String) -> Unit = {}, val deleteCard: (String) -> Unit = {}, val review: () -> Unit = {},
+    val setAgent: (Boolean) -> Unit = {},
 )
 
 @Composable
@@ -56,17 +58,17 @@ fun AiScreen(vm: MainViewModel, onReview: () -> Unit) {
     val cards by vm.cards.collectAsStateWithLifecycle()
     val hasKey by ai.hasKey.collectAsStateWithLifecycle(); val model by ai.model.collectAsStateWithLifecycle()
     val provider by ai.provider.collectAsStateWithLifecycle(); val keys by ai.keys.collectAsStateWithLifecycle()
-    val mode by ai.mode.collectAsStateWithLifecycle(); val cid by ai.courseId.collectAsStateWithLifecycle(); val soc by ai.socratic.collectAsStateWithLifecycle()
+    val mode by ai.mode.collectAsStateWithLifecycle(); val cid by ai.courseId.collectAsStateWithLifecycle(); val soc by ai.socratic.collectAsStateWithLifecycle(); val agentOn by ai.agent.collectAsStateWithLifecycle()
     val chat by ai.chat.collectAsStateWithLifecycle(); val busy by ai.busy.collectAsStateWithLifecycle(); val err by ai.error.collectAsStateWithLifecycle()
     val summary by ai.summary.collectAsStateWithLifecycle(); val quiz by ai.quiz.collectAsStateWithLifecycle(); val draft by ai.draft.collectAsStateWithLifecycle()
     val sel by ai.selected.collectAsStateWithLifecycle(); val usage by ai.sessionUsage.collectAsStateWithLifecycle()
     val courses = snap?.courses.orEmpty()
     val course = courses.firstOrNull { it.id == cid }
     val pdfs = remember(course, tick) { course?.let { ai.pdfsOf(it) }.orEmpty() }
-    val state = AiState(hasKey, provider, keys, model, mode, courses, cid, soc, chat, busy, err, summary, quiz, draft, cards, pdfs, sel, usage, ai.suggestions(course != null))
+    val state = AiState(hasKey, provider, keys, model, mode, courses, cid, soc, chat, busy, err, summary, quiz, draft, cards, pdfs, sel, usage, ai.suggestions(course != null), agentOn)
     val actions = remember(ai) {
         AiActions({ ai.setKey(it) }, ai::setProvider, vm::openLink, ai::selectCourse, { ai.mode.value = it }, ai::send, ai::stop, ai::newChat, { ai.socratic.value = it }, ai::retry,
-            ai::summarize, { ai.makeQuiz() }, { ai.makeCards() }, ai::saveDraft, ai::discardDraft, ai::toggle, vm::deleteCard, onReview)
+            ai::summarize, { ai.makeQuiz() }, { ai.makeCards() }, ai::saveDraft, ai::discardDraft, ai::toggle, vm::deleteCard, onReview, ai::setAgent)
     }
     AiContent(state, actions)
 }
@@ -119,6 +121,8 @@ private fun AiHeader(s: AiState, course: Course?, a: AiActions) {
                 IconButton({ more = true }) { Icon(Icons.Rounded.MoreVert, "Menu") }
                 DropdownMenu(more, { more = false }) {
                     DropdownMenuItem({ Text("Percakapan baru") }, { more = false; a.newChat() }, leadingIcon = { Icon(Icons.Rounded.AddComment, null) })
+                    DropdownMenuItem({ Text("Agen LMS") }, { a.setAgent(!s.agent) }, leadingIcon = { Icon(Icons.Rounded.SmartToy, null) },
+                        trailingIcon = { Switch(s.agent, { a.setAgent(it) }, Modifier.height(24.dp)) })
                     DropdownMenuItem({ Text("Mode Sokrates") }, { a.setSocratic(!s.socratic) }, leadingIcon = { Icon(Icons.Rounded.Psychology, null) },
                         trailingIcon = { Switch(s.socratic, { a.setSocratic(it) }, Modifier.height(24.dp)) })
                 }
@@ -146,6 +150,7 @@ private fun AiHeader(s: AiState, course: Course?, a: AiActions) {
                     border = FilterChipDefaults.filterChipBorder(true, s.mode == m, borderColor = cs.outlineVariant, selectedBorderColor = cs.tertiaryContainer))
             }
         }
+        if (s.agent && s.mode == AiMode.CHAT) Pill("Agen LMS: bisa membaca & mengendalikan aplikasi", cs.secondaryContainer, cs.onSecondaryContainer, Icons.Rounded.SmartToy)
         if (s.socratic && s.mode == AiMode.CHAT) Pill("Mode Sokrates aktif", cs.tertiaryContainer, cs.onTertiaryContainer, Icons.Rounded.Psychology)
         if (course != null && s.pdfs.isNotEmpty()) {
             Surface({ pdfOpen = !pdfOpen }, shape = MaterialTheme.shapes.medium, color = cs.surfaceContainerLow) {

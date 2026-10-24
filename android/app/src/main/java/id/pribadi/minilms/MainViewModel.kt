@@ -31,7 +31,26 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     val site = repo.site
     val snapshot = repo.snapshot
     val tick = repo.tick
-    val ai = AiController(app, repo, viewModelScope)
+    val ai = AiController(app, repo, viewModelScope).also { ctl ->
+        ctl.lms = object : LmsActions {
+            override fun sync(): String = try {
+                val s = repo.sync()
+                "Sinkron selesai: ${s.courses.size} kursus" + if (s.warnings.isEmpty()) "" else "; peringatan: " + s.warnings.take(3).joinToString("; ")
+            } catch (e: Exception) { "Gagal sinkron: ${e.message ?: e.javaClass.simpleName}" }
+            override fun downloadCourse(courseId: Long): String {
+                val n = repo.pending(courseId).size
+                if (n == 0) return "Semua file kursus ini sudah diunduh"
+                Jobs.download(getApplication(), courseId); return "Unduhan dimulai ($n file); progres terlihat di Beranda"
+            }
+            override fun markDone(itemId: Long, done: Boolean) = repo.setAssignmentDone(itemId, done)
+            override fun openPage(url: String): String { openMoodle(url); return "Halaman dibuka di aplikasi" }
+            override fun addCards(courseId: Long, cards: List<Draft>): String = try {
+                val today = java.time.LocalDate.now().toString()
+                repo.addCards(cards.map { Card(java.util.UUID.randomUUID().toString(), courseId, it.front, it.back, 2.5, 0, 0, today) }); "OK: ${cards.size} kartu disimpan ke deck"
+            } catch (e: java.io.IOException) { "Gagal menyimpan kartu: ${e.message}" }
+            override fun librarySearch(source: LibSource, query: String): List<LibItem> = LibraryApi.search(source, query, _lib.value.campus)
+        }
+    }
     val cards = repo.cards
     val doneAssignments = repo.doneAssignments
     val theme = repo.theme

@@ -84,4 +84,10 @@ class MoreShotTest {
         saved = listOf(LibSaved("b", "Principles of Economics", "N. Gregory Mankiw", "b.pdf", 18_000_000)), downloading = mapOf("a" to 0.45f))
     @Test fun libraryLight() = show("library", ThemeMode.LIGHT) { LibraryContent(libState, {}, {}, {}, {}, {}, {}) }
     @Test fun libraryDark() = show("library", ThemeMode.DARK) { LibraryContent(libState, {}, {}, {}, {}, {}, {}) }
+
+    private val agentChat = listOf(
+        ChatMsg("user", "Apa saja tenggat saya minggu ini dan unduh file kursus Ekonomi?"),
+        ChatMsg("assistant", "*› Memeriksa tenggat*\n\n*› Mengunduh kursus Ekonomi*\n\nAda **2 tenggat** minggu ini:\n\n- **Kuis 1** (Ekonomi) — besok 14.00\n- **Esai** (Ekonomi) — Jumat 23.59\n\nUnduhan 12 file sudah dimulai; progresnya terlihat di Beranda."))
+    @Test fun aiAgentLight() = show("ai_agent", ThemeMode.LIGHT) { AiContent(FxAi.state(AiMode.CHAT, chat = agentChat).copy(agent = true), AiActions()) }
+    @Test fun aiAgentDark() = show("ai_agent", ThemeMode.DARK) { AiContent(FxAi.state(AiMode.CHAT, chat = agentChat).copy(agent = true), AiActions()) }
 }

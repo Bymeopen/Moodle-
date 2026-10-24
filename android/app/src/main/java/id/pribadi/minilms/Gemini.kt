@@ -59,6 +59,39 @@ class GeminiClient(private val apiKey: String, private val model: String, privat
             return (0 until parts.length()).map { parts.getJSONObject(it) }.filter { !it.optBoolean("thought") && it.has("text") }.joinToString("") { it.getString("text") }.ifEmpty { null }
         }
 
+        /** Body satu putaran agen dengan function calling. Bagian asli (parts) asisten diputar ulang agar thoughtSignature ikut terkirim. */
+        fun agentBody(system: String, msgs: List<AgentMsg>, tools: List<ToolSpec>): JSONObject {
+            val contents = JSONArray()
+            for (m in msgs) contents.put(when (m) {
+                is AgentMsg.User -> JSONObject().put("role", "user").put("parts", part(ChatMsg("user", m.text, m.docs)))
+                is AgentMsg.Assistant -> JSONObject().put("role", "model").put("parts", m.raw ?: JSONArray(
+                    (if (m.text.isNotEmpty()) listOf(JSONObject().put("text", m.text)) else emptyList()) + m.calls.map { JSONObject().put("functionCall", JSONObject().put("name", it.name).put("args", it.args)) }))
+                is AgentMsg.Results -> JSONObject().put("role", "user").put("parts", JSONArray(m.results.map { (c, out) ->
+                    JSONObject().put("functionResponse", JSONObject().put("name", c.name).put("response", JSONObject().put("result", out)))
+                }))
+            })
+            val decl = JSONArray(tools.map { t ->
+                JSONObject().put("name", t.name).put("description", t.description).apply { if (t.params.optJSONObject("properties")?.length() ?: 0 > 0) put("parameters", toSchema(t.params)) }
+            })
+            return JSONObject().put("systemInstruction", JSONObject().put("parts", JSONArray().put(JSONObject().put("text", system))))
+                .put("contents", contents).put("tools", JSONArray().put(JSONObject().put("functionDeclarations", decl)))
+                .put("generationConfig", JSONObject().put("maxOutputTokens", MAX_OUTPUT))
+        }
+
+        /** Respons generateContent -> teks + panggilan alat. */
+        fun parseStep(resp: JSONObject): AgentReply {
+            resp.optJSONObject("promptFeedback")?.optString("blockReason")?.takeIf { it.isNotEmpty() }?.let { throw ApiError("Google memblokir permintaan ini ($it).") }
+            val u = resp.optJSONObject("usageMetadata")?.let { m -> val cached = m.optLong("cachedContentTokenCount")
+                Usage(input = maxOf(m.optLong("promptTokenCount") - cached, 0), cacheRead = cached, output = m.optLong("candidatesTokenCount") + m.optLong("thoughtsTokenCount")) } ?: Usage()
+            val cand = resp.optJSONArray("candidates")?.optJSONObject(0) ?: throw ApiError("Google tidak memberi jawaban")
+            val parts = cand.optJSONObject("content")?.optJSONArray("parts") ?: throw ApiError("Google tidak memberi jawaban (${cand.optString("finishReason")})")
+            val list = (0 until parts.length()).map { parts.getJSONObject(it) }
+            val calls = list.filter { it.has("functionCall") }.mapIndexed { n, p -> p.getJSONObject("functionCall").let { f -> ToolCall("call_$n", f.getString("name"), f.optJSONObject("args") ?: JSONObject()) } }
+            val text = list.filter { !it.optBoolean("thought") && it.has("text") }.joinToString("") { it.getString("text") }
+            if (text.isEmpty() && calls.isEmpty()) throw ApiError("Google tidak memberi jawaban (${cand.optString("finishReason")}). Coba ubah pertanyaan.")
+            return AgentReply(if (cand.optString("finishReason") == "MAX_TOKENS") "$text\n\n[Jawaban terpotong]" else text, calls, parts, u)
+        }
+
         fun friendly(code: Int, status: String?, message: String?): String = when {
             code == 429 -> "Batas pemakaian Gemini tercapai (tingkat gratis dibatasi per menit/hari). Tunggu sebentar, ganti ke model Flash-Lite, atau pakai Claude."
             code == 400 && (message?.contains("API key", true) == true || status == "INVALID_ARGUMENT" && message?.contains("key", true) == true) -> "Kunci API Gemini tidak valid. Periksa di Profil → AI."
@@ -108,6 +141,12 @@ class GeminiClient(private val apiKey: String, private val model: String, privat
         if (all.isEmpty() && finish.isNotEmpty()) throw ApiError("Google tidak memberi jawaban ($finish). Coba ubah pertanyaan.")
         if (finish == "MAX_TOKENS") all.append("\n\n[Jawaban terpotong]")
         return all.toString()
+    }
+
+    override fun step(system: String, msgs: List<AgentMsg>, tools: List<ToolSpec>): AgentReply {
+        val c = open("generateContent", agentBody(system, msgs, tools))
+        if (c.responseCode != 200) throw errorOf(c).second
+        try { return parseStep(JSONObject(c.inputStream.bufferedReader().use { it.readText() })) } finally { c.disconnect() }
     }
 
     override fun json(system: String, user: String, schema: JSONObject, docs: List<Doc>): JSONObject {

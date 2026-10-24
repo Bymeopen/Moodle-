@@ -39,6 +39,9 @@ interface AiBackend {
     fun stream(system: String, messages: List<ChatMsg>, shouldStop: () -> Boolean = { false }, cache: Boolean = false,
                onUsage: (Usage) -> Unit = {}, onText: (String) -> Unit): String
 
+    /** Satu putaran agen (tanpa streaming): model menjawab teks dan/atau meminta panggilan alat. Penyedia yang belum mendukung melempar ApiError. */
+    fun step(system: String, msgs: List<AgentMsg>, tools: List<ToolSpec>): AgentReply = throw ApiError("Penyedia ini belum mendukung agen LMS")
+
     /** Keluaran terstruktur sesuai skema JSON (JSON Schema); hasilnya JSON valid atau ApiError. */
     fun json(system: String, user: String, schema: JSONObject, docs: List<Doc> = emptyList()): JSONObject
 }

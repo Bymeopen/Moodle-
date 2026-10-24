@@ -56,6 +56,37 @@ class ClaudeClient(private val apiKey: String, private val model: String, privat
             }
         }
 
+        /** Body satu putaran agen (tanpa streaming, tanpa fallback beta) dengan tool use. */
+        fun agentBody(model: String, system: String, msgs: List<AgentMsg>, tools: List<ToolSpec>): JSONObject {
+            val messages = JSONArray()
+            for (m in msgs) messages.put(when (m) {
+                is AgentMsg.User -> JSONObject().put("role", "user").put("content", if (m.docs.isEmpty()) m.text else JSONArray(
+                    m.docs.map { d -> JSONObject().put("type", "document").put("title", d.name).put("source", JSONObject().put("type", "base64").put("media_type", "application/pdf").put("data", d.base64)) } +
+                        JSONObject().put("type", "text").put("text", m.text)))
+                is AgentMsg.Assistant -> JSONObject().put("role", "assistant").put("content", m.raw ?: JSONArray(
+                    (if (m.text.isNotEmpty()) listOf(JSONObject().put("type", "text").put("text", m.text)) else emptyList()) +
+                        m.calls.map { JSONObject().put("type", "tool_use").put("id", it.id).put("name", it.name).put("input", it.args) }))
+                is AgentMsg.Results -> JSONObject().put("role", "user").put("content", JSONArray(m.results.map { (c, out) ->
+                    JSONObject().put("type", "tool_result").put("tool_use_id", c.id).put("content", out)
+                }))
+            })
+            return JSONObject().put("model", model).put("max_tokens", 8000).put("system", system).put("messages", messages)
+                .put("tools", JSONArray(tools.map { JSONObject().put("name", it.name).put("description", it.description).put("input_schema", it.params) }))
+                .put("cache_control", JSONObject().put("type", "ephemeral"))
+        }
+
+        /** Respons Messages -> teks + panggilan alat. */
+        fun parseStep(resp: JSONObject): AgentReply {
+            resp.optJSONObject("error")?.let { throw ApiError(it.optString("message", "Galat dari Claude")) }
+            val u = resp.optJSONObject("usage")?.let { Usage(input = it.optLong("input_tokens"), cacheRead = it.optLong("cache_read_input_tokens"), cacheWrite = it.optLong("cache_creation_input_tokens"), output = it.optLong("output_tokens")) } ?: Usage()
+            val content = resp.optJSONArray("content") ?: throw ApiError("Claude tidak memberi jawaban")
+            val blocks = (0 until content.length()).map { content.getJSONObject(it) }
+            val calls = blocks.filter { it.optString("type") == "tool_use" }.map { ToolCall(it.getString("id"), it.getString("name"), it.optJSONObject("input") ?: JSONObject()) }
+            val text = blocks.filter { it.optString("type") == "text" }.joinToString("") { it.optString("text") }
+            if (text.isEmpty() && calls.isEmpty()) throw ApiError("Claude tidak memberi jawaban (${resp.optString("stop_reason")})")
+            return AgentReply(if (resp.optString("stop_reason") == "max_tokens") "$text\n\n[Jawaban terpotong]" else text, calls, content, u)
+        }
+
         fun friendly(code: Int, message: String?): String = when (code) {
             401 -> "Kunci API tidak valid. Periksa di Lainnya → Claude AI."
             403 -> "Kunci API tidak punya izin untuk model ini."
@@ -89,6 +120,11 @@ class ClaudeClient(private val apiKey: String, private val model: String, privat
             val code = c.responseCode; c.disconnect(); throw ApiError(friendly(code, msg))
         }
         return c
+    }
+
+    override fun step(system: String, msgs: List<AgentMsg>, tools: List<ToolSpec>): AgentReply {
+        val c = send { _ -> agentBody(model, system, msgs, tools) }
+        try { return parseStep(JSONObject(c.inputStream.bufferedReader().use { it.readText() })) } finally { c.disconnect() }
     }
 
     /** Streaming teks. [onText] dipanggil per potongan. Mengembalikan teks lengkap. */
