@@ -90,4 +90,10 @@ class MoreShotTest {
         ChatMsg("assistant", "*› Memeriksa tenggat*\n\n*› Mengunduh kursus Ekonomi*\n\nAda **2 tenggat** minggu ini:\n\n- **Kuis 1** (Ekonomi) — besok 14.00\n- **Esai** (Ekonomi) — Jumat 23.59\n\nUnduhan 12 file sudah dimulai; progresnya terlihat di Beranda."))
     @Test fun aiAgentLight() = show("ai_agent", ThemeMode.LIGHT) { AiContent(FxAi.state(AiMode.CHAT, chat = agentChat).copy(agent = true), AiActions()) }
     @Test fun aiAgentDark() = show("ai_agent", ThemeMode.DARK) { AiContent(FxAi.state(AiMode.CHAT, chat = agentChat).copy(agent = true), AiActions()) }
+
+    private val linuxState = LinuxState(rootOk = true, installed = true, mounted = true, version = "3.24.3", log = listOf(
+        "Rilis: alpine-minirootfs-3.24.3-aarch64.tar.gz (3935 KB)", "Checksum cocok.", "Alpine terpasang.", "$ ls /mnt/lms", "12", "13", "$ python3 --version", "Python 3.14.8"))
+    @Test fun linuxLight() = show("linux", ThemeMode.LIGHT) { LinuxContent(linuxState, LinuxActions()) }
+    @Test fun linuxDark() = show("linux", ThemeMode.DARK) { LinuxContent(linuxState, LinuxActions()) }
+    @Test fun linuxFresh() = show("linux_fresh", ThemeMode.DARK) { LinuxContent(LinuxState(rootOk = null), LinuxActions()) }
 }

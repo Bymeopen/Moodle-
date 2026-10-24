@@ -86,7 +86,7 @@ private val dests = listOf(
 @Composable
 fun MainScreen(vm: MainViewModel) {
     var tab by rememberSaveable { mutableIntStateOf(0) }
-    var overlay by rememberSaveable { mutableStateOf("") }            // "", "course:ID", "grades", "review", "library"
+    var overlay by rememberSaveable { mutableStateOf("") }            // "", "course:ID", "grades", "review", "library", "linux"
     var query by rememberSaveable { mutableStateOf("") }
     var filter by rememberSaveable { mutableStateOf(CourseFilter.ALL) }
     var showDone by rememberSaveable { mutableStateOf(false) }
@@ -134,6 +134,7 @@ fun MainScreen(vm: MainViewModel) {
             when {
                 overlay == "review" -> ReviewScreen(vm) { overlay = "" }
                 overlay == "library" -> LibraryScreen(vm) { overlay = "" }
+                overlay == "linux" -> LinuxScreen(vm) { overlay = "" }
                 overlay == "grades" -> Column { BackBar("Nilai") { overlay = "" }; GradesScreen(courses) }
                 course != null -> CourseDetailScreen(vm, course, stats[course.id] ?: Repo.CourseStats(0, 0, 0, 0), onBack = { overlay = "" }, onAskAi = { askAi(course.id, it) })
                 else -> when (tab) {
@@ -145,7 +146,7 @@ fun MainScreen(vm: MainViewModel) {
                     1 -> PullToRefreshBox(busy, { vm.sync() }) { CoursesScreen(snap, stats, busy, query, filter, { query = it }, { filter = it }, openCourse) }
                     2 -> DeadlinesScreen(rows, done, nowSec, showDone, { showDone = it }, vm::toggleDone, openCourse)
                     3 -> AiScreen(vm, onReview = { overlay = "review" })
-                    else -> ProfileScreen(vm, onGrades = { overlay = "grades" }, onReview = { overlay = "review" }, onLibrary = { overlay = "library" })
+                    else -> ProfileScreen(vm, onGrades = { overlay = "grades" }, onReview = { overlay = "review" }, onLibrary = { overlay = "library" }, onLinux = { overlay = "linux" })
                 }
             }
         }

@@ -30,6 +30,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     val site = repo.site
     val snapshot = repo.snapshot
     val tick = repo.tick
+    /** Lab Linux (chroot, ponsel root). Sengaja tidak terhubung ke Agen AI. */
+    val linux = LinuxController(viewModelScope, app.cacheDir, java.io.File(app.filesDir, "courses"), java.io.File(app.filesDir, "library"))
     val ai = AiController(app, repo, viewModelScope).also { ctl ->
         ctl.lms = object : LmsActions {
             override fun sync(): String = try {
