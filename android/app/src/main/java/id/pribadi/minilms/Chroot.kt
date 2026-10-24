@@ -105,6 +105,7 @@ echo OK
 mkdir -p ${'$'}R/proc ${'$'}R/sys ${'$'}R/dev ${'$'}R/mnt/sdcard ${'$'}R/mnt/lms ${'$'}R/mnt/library ${'$'}R/etc
 grep -q " ${'$'}R/proc " /proc/mounts || mount -t proc proc ${'$'}R/proc
 grep -q " ${'$'}R/sys " /proc/mounts || mount -t sysfs sys ${'$'}R/sys
+for n in null zero urandom random; do grep -q " ${'$'}R/dev/${'$'}n " /proc/mounts && umount ${'$'}R/dev/${'$'}n; done
 grep -q " ${'$'}R/dev " /proc/mounts || mount --bind /dev ${'$'}R/dev
 grep -q " ${'$'}R/mnt/sdcard " /proc/mounts || mount --bind /sdcard ${'$'}R/mnt/sdcard
 if ! grep -q " ${'$'}R/mnt/lms " /proc/mounts; then
@@ -120,9 +121,52 @@ fi
 printf 'nameserver 1.1.1.1\nnameserver 8.8.8.8\n' > ${'$'}R/etc/resolv.conf
 """
 
+    // ---------- sandbox untuk Agen AI: pengguna terbatas, tanpa root ----------
+    const val AI_UID = 5099
+    const val AI_WORK = "/home/ai/work"
+    const val AI_MAX_COPY_KB = 800_000L
+
+    /** Perintah yang dijalankan sebagai pengguna `ai`: masuk folder kerja lalu `timeout` mematikan paksa. [cmd] hanya lewat shQuote. */
+    fun aiInner(cmd: String, timeoutSec: Int = 50) = "cd $AI_WORK && exec timeout -s KILL ${timeoutSec.coerceIn(1, 120)} /bin/sh -c ${shQuote(cmd)}"
+
+    /** Siapkan pengguna `ai` (uid 5099, bukan root) dan folder kerjanya; opsional salin materi kursus (root-owned, hanya-baca bagi `ai`) ke /home/ai/lms. */
+    fun aiSetupScript(courses: String, copyMaterials: Boolean) = HEAD + """
+grep -q '^ai:' ${'$'}R/etc/passwd || echo 'ai:x:$AI_UID:$AI_UID:AI sandbox:/home/ai:/bin/sh' >> ${'$'}R/etc/passwd
+grep -q '^ai:' ${'$'}R/etc/group || echo 'ai:x:$AI_UID:' >> ${'$'}R/etc/group
+mkdir -p ${'$'}R/home/ai/work
+chown $AI_UID:$AI_UID ${'$'}R/home/ai ${'$'}R/home/ai/work
+chmod 755 ${'$'}R/home/ai ${'$'}R/home/ai/work
+""" + (if (copyMaterials) """
+rm -rf ${'$'}R/home/ai/lms
+mkdir -p ${'$'}R/home/ai/lms
+if [ -d ${shQuote(courses)} ]; then
+  KB=${'$'}(du -sk ${shQuote(courses)} | cut -f1)
+  if [ "${'$'}KB" -le $AI_MAX_COPY_KB ]; then
+    cp -R ${shQuote(courses)}/. ${'$'}R/home/ai/lms/ && chown -hR 0:0 ${'$'}R/home/ai/lms && chmod -R a+rX,go-w ${'$'}R/home/ai/lms && echo MATERI_DISALIN
+  else echo MATERI_TERLALU_BESAR; fi
+fi
+""" else "") + "echo AI_SIAP\n"
+
+    /**
+     * Jalankan [cmd] **bukan sebagai root**: `su ai` (hak diturunkan, grup tambahan dibuang sehingga tanpa grup inet Android), di namespace jaringan kosong
+     * (`unshare -n`) bila kernel mendukung. /dev hanya null/zero/urandom/random bila /dev penuh tidak sedang di-mount; tanpa /sdcard dan tanpa data aplikasi.
+     */
+    fun aiExecScript(cmd: String, timeoutSec: Int = 50) = HEAD + """
+mkdir -p ${'$'}R/dev ${'$'}R/etc
+if ! grep -q " ${'$'}R/dev " /proc/mounts; then
+  for n in null zero urandom random; do
+    [ -e ${'$'}R/dev/${'$'}n ] || : > ${'$'}R/dev/${'$'}n
+    grep -q " ${'$'}R/dev/${'$'}n " /proc/mounts || mount --bind /dev/${'$'}n ${'$'}R/dev/${'$'}n
+  done
+fi
+NS=""
+if chroot ${'$'}R /usr/bin/unshare -n /bin/true 2>/dev/null; then NS="/usr/bin/unshare -n"; else echo "PERINGATAN: isolasi jaringan tidak tersedia di kernel ini"; fi
+chroot ${'$'}R /usr/bin/env -i HOME=/home/ai TERM=dumb PATH=$PATH ${'$'}NS /bin/su -s /bin/sh -c ${shQuote(aiInner(cmd, timeoutSec))} ai 2>&1
+"""
+
     /** Lepas semua mount berurutan terbalik; mengeluarkan MASIH_ADA_MOUNT bila ada yang gagal. */
     fun unmountScript() = HEAD + """
-for d in mnt/library mnt/lms mnt/sdcard dev sys proc; do grep -q " ${'$'}R/${'$'}d " /proc/mounts && umount ${'$'}R/${'$'}d; done
+for d in mnt/library mnt/lms mnt/sdcard dev dev/null dev/zero dev/urandom dev/random sys proc; do grep -q " ${'$'}R/${'$'}d " /proc/mounts && umount ${'$'}R/${'$'}d; done
 if grep -q " ${'$'}R/" /proc/mounts; then echo MASIH_ADA_MOUNT; exit 3; fi
 echo OK
 """
@@ -133,7 +177,7 @@ echo OK
 
     /** Hapus Linux: menolak bila masih ada mount di bawah ROOT (rm -rf lewat bind-mount akan menghapus penyimpanan asli). */
     fun removeScript() = HEAD + """
-for d in mnt/library mnt/lms mnt/sdcard dev sys proc; do grep -q " ${'$'}R/${'$'}d " /proc/mounts && umount ${'$'}R/${'$'}d; done
+for d in mnt/library mnt/lms mnt/sdcard dev dev/null dev/zero dev/urandom dev/random sys proc; do grep -q " ${'$'}R/${'$'}d " /proc/mounts && umount ${'$'}R/${'$'}d; done
 if grep -q " ${'$'}R/" /proc/mounts; then echo MASIH_ADA_MOUNT_DIBATALKAN; exit 3; fi
 rm -rf ${'$'}R && echo OK
 """
@@ -235,6 +279,38 @@ class LinuxController(
             if (r.out.isNotBlank()) log(r.out.trimEnd()); if (r.exit != 0) log("(kode keluar ${r.exit})")
             statusNow()
         }
+    }
+
+    @Volatile private var aiSetupAt = 0L
+    private fun aiSetup(copy: Boolean): String {
+        prepareDirs()
+        val r = runner.run(Chroot.aiSetupScript(coursesDir.absolutePath, copy), 600)
+        if (r.out.contains("AI_SIAP")) aiSetupAt = System.currentTimeMillis()
+        return r.out.trim()
+    }
+
+    /** Segarkan salinan materi kursus yang dilihat AI (/home/ai/lms). Salinan dibuat ulang; maksimal ${Chroot.AI_MAX_COPY_KB / 1000} MB. */
+    fun refreshAiMaterials(): Job? = task { step("Menyalin materi untuk AI…"); log(aiSetup(true).lines().joinToString("\n") { when (it) { "MATERI_DISALIN" -> "Salinan materi untuk AI diperbarui."; "MATERI_TERLALU_BESAR" -> "Materi terlalu besar untuk disalin; AI hanya punya /home/ai/work."; "AI_SIAP" -> "Sandbox AI siap."; else -> it } }) }
+
+    /**
+     * Dipakai Agen AI **setelah persetujuan** (lihat [CommandGate]): menjalankan [cmd] sebagai pengguna terbatas `ai`, bukan root. Sinkron.
+     * Mengembalikan keluaran (dipangkas). Setiap perintah dan hasilnya juga dicatat di terminal Lab Linux.
+     */
+    fun runForAi(cmd: String): String {
+        val c = cmd.trim()
+        if (c.isEmpty() || c.length > 2000) return "Perintah kosong atau lebih dari 2000 karakter; tidak dijalankan."
+        synchronized(lock) { if (_state.value.busy) return "Lab Linux sedang dipakai proses lain; coba lagi sebentar."; _state.update { it.copy(busy = true, step = "Perintah AI berjalan…") } }
+        try {
+            if (_state.value.rootOk != true || !_state.value.installed) statusNow()
+            if (_state.value.rootOk != true || !_state.value.installed) return "Linux belum terpasang atau root tidak tersedia."
+            val fresh = System.currentTimeMillis() - aiSetupAt < 30 * 60_000L
+            if (!fresh) { val s = aiSetup(copy = aiSetupAt == 0L); if (!s.contains("AI_SIAP")) return "Sandbox AI gagal disiapkan: ${s.take(300)}" }
+            log("[AI] $ ${c.take(300)}")
+            val r = runner.run(Chroot.aiExecScript(c), 75)
+            val out = r.out.trim()
+            log(out.take(2000).ifEmpty { "(tanpa keluaran)" })
+            return (out.take(6000).ifEmpty { "(tanpa keluaran)" }) + if (r.exit != 0) "\n(kode keluar ${r.exit})" else ""
+        } finally { _state.update { it.copy(busy = false, step = "") } }
     }
 
     fun mount(): Job? = task { step("Mount…"); prepareDirs(); val r = runner.run(Chroot.mountScript(coursesDir.absolutePath, libraryDir.absolutePath), 60); log(r.out.trim().ifEmpty { "Mount siap: /mnt/lms (materi, read-only), /mnt/library, /mnt/sdcard" }); statusNow() }

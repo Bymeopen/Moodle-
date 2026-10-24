@@ -28,19 +28,21 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 class LinuxActions(
     val refresh: () -> Unit = {}, val install: () -> Unit = {}, val installTools: () -> Unit = {}, val mount: () -> Unit = {},
     val unmount: () -> Unit = {}, val remove: () -> Unit = {}, val run: (String) -> Unit = {},
+    val setAiMode: (LinuxAiMode) -> Unit = {}, val refreshAiMaterials: () -> Unit = {},
 )
 
 @Composable
 fun LinuxScreen(vm: MainViewModel, onBack: () -> Unit) {
     val st by vm.linux.state.collectAsStateWithLifecycle()
+    val aiMode by vm.ai.linuxAiMode.collectAsStateWithLifecycle()
     LaunchedEffect(Unit) { vm.linux.refresh() }
-    val actions = remember(vm) { LinuxActions(vm.linux::refresh, vm.linux::install, vm.linux::installTools, vm.linux::mount, vm.linux::unmount, vm.linux::remove) { vm.linux.exec(it) } }
-    Column(Modifier.fillMaxSize()) { BackBar("Lab Linux (root)", onBack); LinuxContent(st, actions) }
+    val actions = remember(vm) { LinuxActions(vm.linux::refresh, vm.linux::install, vm.linux::installTools, vm.linux::mount, vm.linux::unmount, vm.linux::remove, { vm.linux.exec(it) }, vm.ai::setLinuxAiMode, vm.linux::refreshAiMaterials) }
+    Column(Modifier.fillMaxSize()) { BackBar("Lab Linux (root)", onBack); LinuxContent(st, actions, aiMode) }
 }
 
 /** Lab Linux: pasang Alpine di chroot (ponsel root), lihat status, dan jalankan perintah di terminal mini. Stateless. */
 @Composable
-fun LinuxContent(s: LinuxState, a: LinuxActions) {
+fun LinuxContent(s: LinuxState, a: LinuxActions, aiMode: LinuxAiMode = LinuxAiMode.OFF) {
     val cs = MaterialTheme.colorScheme
     var confirm by rememberSaveable { mutableStateOf("") }          // "", "install", "remove"
     var cmd by rememberSaveable { mutableStateOf("") }
@@ -66,6 +68,21 @@ fun LinuxContent(s: LinuxState, a: LinuxActions) {
         if (s.busy) Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Text(s.step.ifEmpty { "Bekerja…" }, style = MaterialTheme.typography.labelMedium, color = cs.onSurfaceVariant)
             s.progress?.let { ProgressBar(it, Modifier.fillMaxWidth().height(4.dp)) } ?: LinearWaitBar()
+        }
+        if (s.installed) Card2(Modifier.fillMaxWidth()) {
+            Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("Akses AI ke Linux", style = MaterialTheme.typography.titleSmall)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    LinuxAiMode.values().forEach { m -> FilterChip(aiMode == m, { a.setAiMode(m) }, { Text(m.label) }) }
+                }
+                Text(when (aiMode) {
+                    LinuxAiMode.OFF -> "AI tidak bisa menjalankan perintah apa pun."
+                    LinuxAiMode.ASK -> "AI harus meminta izin Anda untuk tiap perintah (Izinkan/Tolak di chat)."
+                    LinuxAiMode.AUTO -> "AI menjalankan perintah tanpa bertanya. Tetap di sandbox, tetapi pilih ini hanya bila Anda mengawasi."
+                } + " Perintah AI berjalan sebagai pengguna terbatas (bukan root), tanpa jaringan dan tanpa akses penyimpanan ponsel; AI hanya melihat salinan materi di /home/ai/lms dan menulis di /home/ai/work. Semua perintahnya tercatat di terminal ini.",
+                    style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant)
+                if (aiMode != LinuxAiMode.OFF) OutlinedButton(a.refreshAiMaterials, enabled = !s.busy) { Text("Segarkan salinan materi untuk AI") }
+            }
         }
         // terminal mini
         val listState = rememberLazyListState()

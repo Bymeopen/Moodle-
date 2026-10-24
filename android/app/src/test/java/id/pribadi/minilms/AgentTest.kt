@@ -25,7 +25,7 @@ class AgentTest {
         override fun librarySearch(source: LibSource, query: String) = listOf(LibItem(source, "x", "Jurnal $query", "A", "2020", "", "https://j.id/1")).also { log += "lib:${source.name}" }
     }
 
-    private fun tools(acts: Acts = Acts(), done: Set<Long> = emptySet()) = LmsTools({ snap }, { done }, { _, _, f -> if (f.name.endsWith(".docx")) "isi docx" else null }, { _, _, f -> f.name.endsWith(".docx") }, acts) { now }
+    private fun tools(acts: Acts = Acts(), done: Set<Long> = emptySet()) = LmsTools({ snap }, { done }, { _, _, f -> if (f.name.endsWith(".docx")) "isi docx" else null }, { _, _, f -> f.name.endsWith(".docx") }, acts, nowSec = { now })
     private fun call(t: LmsTools, name: String, json: String = "{}") = t.execute(name, JSONObject(json))
 
     // ---------- alat ----------

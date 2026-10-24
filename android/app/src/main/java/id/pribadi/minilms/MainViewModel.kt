@@ -33,6 +33,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     /** Lab Linux (chroot, ponsel root). Sengaja tidak terhubung ke Agen AI. */
     val linux = LinuxController(viewModelScope, app.cacheDir, java.io.File(app.filesDir, "courses"), java.io.File(app.filesDir, "library"))
     val ai = AiController(app, repo, viewModelScope).also { ctl ->
+        ctl.linuxBackend = object : LinuxBackend {
+            override fun ready() = linux.state.value.let { it.installed && it.rootOk == true }
+            override fun exec(cmd: String) = linux.runForAi(cmd)
+        }
         ctl.lms = object : LmsActions {
             override fun sync(): String = try {
                 val s = repo.sync()

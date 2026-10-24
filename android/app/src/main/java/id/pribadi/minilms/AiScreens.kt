@@ -32,6 +32,7 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 
 /** Foto keadaan AI untuk UI; dibangun dari [AiController] sehingga layar bisa dirender tanpa ViewModel. */
@@ -39,7 +40,7 @@ data class AiState(
     val hasKey: Boolean, val provider: Provider, val keys: Set<Provider>, val model: String, val mode: AiMode, val courses: List<Course>, val courseId: Long?, val socratic: Boolean,
     val chat: List<ChatMsg>, val busy: Boolean, val error: String?, val summary: String, val quiz: List<Quiz>, val draft: List<Draft>,
     val cards: List<Card>, val pdfs: List<PdfSource>, val selected: Set<String>, val sessionUsage: Usage, val suggestions: List<String>,
-    val agent: Boolean = false, val speaking: Boolean = false,
+    val agent: Boolean = false, val speaking: Boolean = false, val pendingCmd: String? = null,
 )
 
 class AiActions(
@@ -48,6 +49,7 @@ class AiActions(
     val summarize: () -> Unit = {}, val makeQuiz: () -> Unit = {}, val makeCards: () -> Unit = {}, val saveDraft: () -> Unit = {}, val discardDraft: () -> Unit = {},
     val togglePdf: (String) -> Unit = {}, val deleteCard: (String) -> Unit = {}, val review: () -> Unit = {},
     val setAgent: (Boolean) -> Unit = {}, val speak: (String) -> Unit = {}, val stopSpeak: () -> Unit = {},
+    val answerCmd: (Boolean) -> Unit = {},
 )
 
 @Composable
@@ -58,17 +60,17 @@ fun AiScreen(vm: MainViewModel, onReview: () -> Unit) {
     val cards by vm.cards.collectAsStateWithLifecycle()
     val hasKey by ai.hasKey.collectAsStateWithLifecycle(); val model by ai.model.collectAsStateWithLifecycle()
     val provider by ai.provider.collectAsStateWithLifecycle(); val keys by ai.keys.collectAsStateWithLifecycle()
-    val mode by ai.mode.collectAsStateWithLifecycle(); val cid by ai.courseId.collectAsStateWithLifecycle(); val soc by ai.socratic.collectAsStateWithLifecycle(); val agentOn by ai.agent.collectAsStateWithLifecycle(); val speaking by vm.speaking.collectAsStateWithLifecycle()
+    val mode by ai.mode.collectAsStateWithLifecycle(); val cid by ai.courseId.collectAsStateWithLifecycle(); val soc by ai.socratic.collectAsStateWithLifecycle(); val agentOn by ai.agent.collectAsStateWithLifecycle(); val speaking by vm.speaking.collectAsStateWithLifecycle(); val pendingCmd by ai.gate.pending.collectAsStateWithLifecycle()
     val chat by ai.chat.collectAsStateWithLifecycle(); val busy by ai.busy.collectAsStateWithLifecycle(); val err by ai.error.collectAsStateWithLifecycle()
     val summary by ai.summary.collectAsStateWithLifecycle(); val quiz by ai.quiz.collectAsStateWithLifecycle(); val draft by ai.draft.collectAsStateWithLifecycle()
     val sel by ai.selected.collectAsStateWithLifecycle(); val usage by ai.sessionUsage.collectAsStateWithLifecycle()
     val courses = snap?.courses.orEmpty()
     val course = courses.firstOrNull { it.id == cid }
     val pdfs = remember(course, tick) { course?.let { ai.pdfsOf(it) }.orEmpty() }
-    val state = AiState(hasKey, provider, keys, model, mode, courses, cid, soc, chat, busy, err, summary, quiz, draft, cards, pdfs, sel, usage, ai.suggestions(course != null), agentOn, speaking)
+    val state = AiState(hasKey, provider, keys, model, mode, courses, cid, soc, chat, busy, err, summary, quiz, draft, cards, pdfs, sel, usage, ai.suggestions(course != null), agentOn, speaking, pendingCmd)
     val actions = remember(ai) {
         AiActions({ ai.setKey(it) }, ai::setProvider, vm::openLink, ai::selectCourse, { ai.mode.value = it }, ai::send, ai::stop, ai::newChat, { ai.socratic.value = it }, ai::retry,
-            ai::summarize, { ai.makeQuiz() }, { ai.makeCards() }, ai::saveDraft, ai::discardDraft, ai::toggle, vm::deleteCard, onReview, ai::setAgent, vm.speaker::speak, vm.speaker::stop)
+            ai::summarize, { ai.makeQuiz() }, { ai.makeCards() }, ai::saveDraft, ai::discardDraft, ai::toggle, vm::deleteCard, onReview, ai::setAgent, vm.speaker::speak, vm.speaker::stop, ai.gate::answer)
     }
     AiContent(state, actions)
 }
@@ -207,7 +209,7 @@ private fun ChatPane(s: AiState, a: AiActions) {
                 if (!s.sessionUsage.isEmpty) item { Text("Sesi ini " + s.sessionUsage.label(s.model), Modifier.fillMaxWidth(), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.outline, textAlign = TextAlign.Center) }
             }
         }
-        ChatInput(s.busy, a)
+        ChatInput(s.busy, a, s.pendingCmd)
     }
 }
 
@@ -251,8 +253,9 @@ private fun TypingDots() {
 }
 
 @Composable
-private fun ChatInput(busy: Boolean, a: AiActions) {
+private fun ChatInput(busy: Boolean, a: AiActions, pendingCmd: String? = null) {
     val cs = MaterialTheme.colorScheme
+    if (pendingCmd != null) CommandApproval(pendingCmd, a.answerCmd)
     var text by rememberSaveable { mutableStateOf("") }
     Surface(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp), shape = RoundedCornerShape(28.dp), color = cs.surfaceContainerLowest,
         border = androidx.compose.foundation.BorderStroke(1.dp, cs.outlineVariant)) {
@@ -486,6 +489,27 @@ fun ReviewContent(initial: List<Card>, onRate: (Card, String) -> Card, onClose: 
                     }
                 }
             } else Button({ flipped = true }, Modifier.fillMaxWidth().height(52.dp)) { Text("Tampilkan jawaban") }
+        }
+    }
+}
+
+/** Kartu persetujuan: AI ingin menjalankan perintah di Linux sandbox. Perintah ditampilkan utuh dan baru berjalan setelah Izinkan. */
+@Composable
+private fun CommandApproval(cmd: String, onAnswer: (Boolean) -> Unit) {
+    val cs = MaterialTheme.colorScheme
+    Surface(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp), shape = RoundedCornerShape(16.dp), color = cs.tertiaryContainer) {
+        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Icon(Icons.Rounded.Terminal, null, tint = cs.onTertiaryContainer); Text("AI ingin menjalankan perintah di Linux", style = MaterialTheme.typography.titleSmall, color = cs.onTertiaryContainer)
+            }
+            Surface(shape = RoundedCornerShape(10.dp), color = Color(0xFF0D1117)) {
+                Text(cmd.take(1500), Modifier.padding(10.dp), color = Color(0xFFE6EDF3), fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace, fontSize = 12.sp)
+            }
+            Text("Berjalan sebagai pengguna terbatas tanpa root dan tanpa jaringan.", style = MaterialTheme.typography.bodySmall, color = cs.onTertiaryContainer)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button({ onAnswer(true) }) { Text("Izinkan") }
+                OutlinedButton({ onAnswer(false) }) { Text("Tolak") }
+            }
         }
     }
 }

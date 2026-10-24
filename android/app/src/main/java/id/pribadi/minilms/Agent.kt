@@ -35,6 +35,31 @@ interface LmsActions {
     fun exportPack(courseId: Long): String
 }
 
+/** Akses AI ke Linux: [ready] = fitur aktif dan Linux terpasang; [run] meminta persetujuan (bila perlu) lalu menjalankan sebagai pengguna terbatas. */
+interface LinuxAccess { fun ready(): Boolean; fun run(command: String): String }
+
+/** Pelaksana di bawah [LinuxAccess] (diisi ViewModel): [exec] harus menjalankan sebagai pengguna terbatas, bukan root. */
+interface LinuxBackend { fun ready(): Boolean; fun exec(cmd: String): String }
+
+enum class LinuxAiMode(val label: String) { OFF("Mati"), ASK("Tanya dulu"), AUTO("Otomatis") }
+
+/** Gerbang persetujuan perintah Linux dari AI: ASK memblokir sampai pengguna menjawab (atau dibatalkan/waktu habis = ditolak). */
+class CommandGate {
+    val pending = kotlinx.coroutines.flow.MutableStateFlow<String?>(null)
+    @Volatile private var waiter: java.util.concurrent.CompletableFuture<Boolean>? = null
+
+    fun request(command: String, mode: LinuxAiMode, timeoutMs: Long = 120_000): Boolean {
+        if (mode == LinuxAiMode.OFF) return false
+        if (mode == LinuxAiMode.AUTO) return true
+        val f = java.util.concurrent.CompletableFuture<Boolean>()
+        synchronized(this) { waiter?.complete(false); waiter = f; pending.value = command }
+        return try { f.get(timeoutMs, java.util.concurrent.TimeUnit.MILLISECONDS) } catch (e: Exception) { false }
+        finally { synchronized(this) { if (waiter === f) { waiter = null; pending.value = null } } }
+    }
+    fun answer(ok: Boolean) { synchronized(this) { waiter?.complete(ok) } }
+    fun cancel() = answer(false)
+}
+
 /**
  * Alat LMS untuk agen. Baca: daftar kursus, tenggat, isi item (termasuk forum dan tinjauan tes), nilai, cari materi, file terunduh, perpustakaan.
  * Kendali (lokal dan bisa dibatalkan): sinkron, unduh kursus, tandai tugas selesai, buat kartu, buka halaman.
@@ -44,7 +69,7 @@ interface LmsActions {
 class LmsTools(
     private val snapshot: () -> Snapshot?, private val done: () -> Set<Long>,
     private val textOf: (Course, Item, FileRef) -> String?, private val isDownloaded: (Course, Item, FileRef) -> Boolean,
-    private val actions: LmsActions, private val nowSec: () -> Long = { System.currentTimeMillis() / 1000 },
+    private val actions: LmsActions, private val nowSec: () -> Long = { System.currentTimeMillis() / 1000 }, private val linux: LinuxAccess? = null,
 ) {
     companion object {
         const val MAX_RESULT = 7000
@@ -56,7 +81,7 @@ class LmsTools(
         private fun i(desc: String) = """{"type":"integer","description":"$desc"}"""
     }
 
-    val specs: List<ToolSpec> = listOf(
+    private val baseSpecs: List<ToolSpec> = listOf(
         ToolSpec("list_courses", "Daftar kursus pengguna: id, nama, jumlah item/tugas/file, file terunduh, persen nilai.", obj()),
         ToolSpec("list_deadlines", "Tugas dan tes dengan tenggat: kursus, id item, judul, waktu tenggat, sisa jam, status selesai. Termasuk yang terlambat dan belum selesai.",
             obj("days" to i("Jangkauan hari ke depan (default 14)"), "include_done" to """{"type":"boolean","description":"Sertakan yang sudah ditandai selesai"}""")),
@@ -81,6 +106,12 @@ class LmsTools(
             obj("course_id" to int, "cards" to """{"type":"array","items":{"type":"object","properties":{"front":$str,"back":$str},"required":["front","back"]}}""", required = listOf("course_id", "cards"))),
     )
 
+    private val linuxSpec = ToolSpec("linux_exec", "Jalankan perintah shell di Linux (Alpine) sebagai pengguna terbatas 'ai' (bukan root, tanpa jaringan, tanpa akses penyimpanan ponsel). Folder kerja /home/ai/work (boleh ditulis); salinan materi kursus hanya-baca di /home/ai/lms/<id kursus>. Ada python3 dan pdftotext bila sudah dipasang. Maks 50 detik; pengguna dapat menolak perintah.",
+        obj("command" to str, required = listOf("command")))
+
+    /** Daftar alat; `linux_exec` hanya muncul bila akses Linux untuk AI aktif dan Linux terpasang. */
+    val specs: List<ToolSpec> get() = baseSpecs + (if (linux?.ready() == true) listOf(linuxSpec) else emptyList())
+
     /** Kalimat singkat untuk jejak aksi di chat. */
     fun describe(c: ToolCall): String = when (c.name) {
         "list_courses" -> "Melihat daftar kursus"; "list_deadlines" -> "Memeriksa tenggat"; "get_course" -> "Membuka kursus ${courseName(c.args.optLong("course_id"))}"
@@ -89,7 +120,7 @@ class LmsTools(
         "library_search" -> "Mencari di perpustakaan: ${c.args.optString("query").take(40)}"; "sync_now" -> "Sinkron dari Moodle"
         "download_course" -> "Mengunduh kursus ${courseName(c.args.optLong("course_id"))}"
         "mark_task_done" -> (if (c.args.optBoolean("done", true)) "Menandai selesai: " else "Menandai belum selesai: ") + (items().firstOrNull { it.second.id == c.args.optLong("item_id") }?.second?.title ?: "tugas")
-        "open_page" -> "Membuka halaman di aplikasi"; "export_study_pack" -> "Menyiapkan paket belajar ${courseName(c.args.optLong("course_id"))}"; "create_flashcards" -> "Membuat ${c.args.optJSONArray("cards")?.length() ?: 0} kartu hafalan"
+        "open_page" -> "Membuka halaman di aplikasi"; "linux_exec" -> "Menjalankan di Linux: ${c.args.optString("command").take(70)}"; "export_study_pack" -> "Menyiapkan paket belajar ${courseName(c.args.optLong("course_id"))}"; "create_flashcards" -> "Membuat ${c.args.optJSONArray("cards")?.length() ?: 0} kartu hafalan"
         else -> c.name
     }
 
@@ -112,7 +143,7 @@ class LmsTools(
     private fun run(name: String, a: JSONObject): String {
         fun reqLong(k: String): Long = if (a.has(k) && !a.isNull(k)) a.optLong(k, Long.MIN_VALUE).takeIf { it != Long.MIN_VALUE } ?: throw IllegalArgumentException("parameter $k harus angka") else throw IllegalArgumentException("parameter $k wajib")
         fun course(): Course = courses().firstOrNull { it.id == reqLong("course_id") } ?: throw IllegalArgumentException("kursus tidak ditemukan; panggil list_courses")
-        if (snapshot() == null && name !in setOf("library_search", "sync_now")) return "Belum ada data kursus. Panggil sync_now dulu."
+        if (snapshot() == null && name !in setOf("library_search", "sync_now", "linux_exec")) return "Belum ada data kursus. Panggil sync_now dulu."
         return when (name) {
             "list_courses" -> JSONArray(courses().map { c ->
                 val files = c.items.sumOf { it.files.size }; val got = c.items.sumOf { i -> i.files.count { isDownloaded(c, i, it) } }
@@ -178,6 +209,11 @@ class LmsTools(
             "open_page" -> {
                 val (_, i) = findItem(reqLong("course_id"), reqLong("item_id")) ?: throw IllegalArgumentException("item tidak ditemukan")
                 if (i.url.isEmpty()) "Item ini tidak punya halaman Moodle." else actions.openPage(i.url)
+            }
+            "linux_exec" -> {
+                val l = linux?.takeIf { it.ready() } ?: throw IllegalArgumentException("akses Linux untuk AI belum diaktifkan atau Linux belum terpasang")
+                val cmd = a.optString("command").trim(); if (cmd.isEmpty()) throw IllegalArgumentException("parameter command wajib")
+                l.run(cmd)
             }
             "export_study_pack" -> actions.exportPack(course().id)
             "create_flashcards" -> {

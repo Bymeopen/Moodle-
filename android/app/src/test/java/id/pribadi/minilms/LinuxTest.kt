@@ -64,7 +64,7 @@ class ChrootScriptTest {
         val s = Chroot.removeScript()
         assertTrue(s.indexOf("umount") < s.indexOf("MASIH_ADA_MOUNT_DIBATALKAN"))
         assertTrue(s.indexOf("exit 3") < s.indexOf("rm -rf"))                              // rm hanya setelah pemeriksaan mount
-        assertTrue(s.contains("mnt/library mnt/lms mnt/sdcard dev sys proc"))              // urutan terbalik dari mount
+        assertTrue(s.contains("mnt/library mnt/lms mnt/sdcard dev dev/null dev/zero dev/urandom dev/random sys proc"))   // dev penuh dulu, lalu node tunggal sandbox AI
         assertEquals(1, Regex("rm -rf").findAll(s).count())
         assertFalse(Chroot.unmountScript().contains("rm -rf"))
     }
