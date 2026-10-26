@@ -37,6 +37,9 @@ class SimpleHTMLToText(html.parser.HTMLParser):
         return "\n".join(line for line in lines if line)
 
 def fetch_web(url: str, max_chars: int = 6000) -> None:
+    if not url.lower().startswith(("http://", "https://")):
+        print(f"Error fetching {url}: Only http:// and https:// URLs are allowed.")
+        sys.exit(1)
     req = urllib.request.Request(url, headers={"User-Agent": "HermesLite-Reader/2.0 (+NextCraftForge)"})
     try:
         with urllib.request.urlopen(req, timeout=10) as resp:

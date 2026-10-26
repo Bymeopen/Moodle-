@@ -18,6 +18,7 @@ DENY_CMD_PATTERNS = [
     (r"unprivileged_bpf_disabled", "Blocked: Modifying unprivileged_bpf_disabled crashes Android system_server."),
     (r"rm\s+-[a-zA-Z]*r[a-zA-Z]*f[a-zA-Z]*\s+(/|/root|/workspace|~|\$HOME)(\s|$)", "Blocked: Catastrophic recursive deletion outside project subdir."),
     (r"\b(mkfs|fdisk|wipefs)\b", "Blocked: Disk formatting utilities are forbidden."),
+    (r"\bdd\b.*\bof=/dev/(sd|vd|nvme|mmcblk|loop|block|dm-)", "Blocked: Direct dd write to block device is forbidden."),
     (r":\(\)\s*\{\s*:\|:&\s*\};:", "Blocked: Fork bomb detected."),
 ]
 
@@ -99,7 +100,7 @@ def main():
     tool_name = tool_call.get("name", "") or payload.get("toolName", "")
     args = tool_call.get("args", {})
 
-    if tool_name in ("write_file", "edit_file") or "Path" in args:
+    if tool_name in ("write_file", "edit_file", "replace_file_content", "multi_replace_file_content") or any(k in args for k in ("Path", "path", "TargetFile")):
         result = check_file_mutation(args)
     else:
         result = check_command(args)
