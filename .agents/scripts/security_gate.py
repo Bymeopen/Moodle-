@@ -20,12 +20,15 @@ DENY_CMD_PATTERNS = [
     (r"\b(mkfs|fdisk|wipefs)\b", "Blocked: Disk formatting utilities are forbidden."),
     (r"\bdd\b.*\bof=/dev/(sd|vd|nvme|mmcblk|loop|block|dm-)", "Blocked: Direct dd write to block device is forbidden."),
     (r":\(\)\s*\{\s*:\|:&\s*\};:", "Blocked: Fork bomb detected."),
+    # Any name: f(){ f|f& };f
+    (r"(\w+)\s*\(\)\s*\{[^}]*\1\s*\|\s*\1\s*&[^}]*\}\s*;?\s*\1", "Blocked: Fork bomb detected."),
 ]
 
 # 2. Bash Command High-Risk Patterns (Require explicit user confirmation)
 ASK_CMD_PATTERNS = [
     (r"curl\s+.*\|\s*(ba)?sh", "Remote script pipe-to-shell detected. Confirm execution?"),
     (r"wget\s+.*\|\s*(ba)?sh", "Remote script pipe-to-shell detected. Confirm execution?"),
+    (r"(bash|sh|zsh)\s+<\(\s*(curl|wget)", "Remote script process-substitution-to-shell detected. Confirm execution?"),
     (r"\b(nc|ncat|netcat)\b.*-e", "Reverse shell pattern detected. Confirm execution?"),
 ]
 
@@ -34,7 +37,12 @@ SECRET_AND_INJECTION_PATTERNS = [
     (r"AIza[0-9A-Za-z\-_]{35}", "Blocked by Memory Guard: Google API key detected in memory/skill file."),
     (r"gh[pousr]_[A-Za-z0-9_]{36,255}", "Blocked by Memory Guard: GitHub token detected in memory/skill file."),
     (r"sk-[A-Za-z0-9\-_]{20,}", "Blocked by Memory Guard: API secret key (sk-...) detected in memory/skill file."),
+    (r"AKIA[0-9A-Z]{16}", "Blocked by Memory Guard: AWS access key ID detected."),
+    (r"(?i)aws_secret_access_key\s*[=:]", "Blocked by Memory Guard: AWS secret access key assignment detected."),
+    (r"xox[abp]-[0-9A-Za-z-]{10,}", "Blocked by Memory Guard: Slack token detected."),
+    (r"-----BEGIN (RSA|EC|OPENSSH|PGP|DSA) PRIVATE KEY-----", "Blocked by Memory Guard: Private key block detected."),
     (r"-----BEGIN (RSA |EC |OPENSSH |PRIVATE )?KEY-----", "Blocked by Memory Guard: Private cryptographic key detected."),
+    (r"(?i)\b(password|passwd|secret|api[_-]?key|token)\s*[=:]\s*\S{8,}", "Blocked by Memory Guard: Credential assignment (password/secret/api_key/token=...) detected."),
     (r"(?i)(ignore\s+(all\s+)?(previous|prior)\s+instructions|disregard\s+system\s+prompt|you\s+are\s+now\s+in\s+developer\s+mode)", "Blocked by Memory Guard: Prompt injection pattern detected in memory/skill file."),
 ]
 
@@ -54,8 +62,29 @@ def is_protected_cognitive_file(path: str) -> bool:
     abs_path = os.path.abspath(path)
     if abs_path in MEMORY_FILES:
         return True
-    skills_dir = os.path.join(WORKSPACE_ROOT, ".agents/skills/")
-    return abs_path.startswith(skills_dir) and abs_path.endswith(".md")
+    # AGENTS.md section 1.C: no secrets in ANY .md file, not only memory/skill files.
+    return abs_path.lower().endswith(".md")
+
+
+def _allowed_write_roots() -> list:
+    # Directories an agent may write to (AGENTS.md section 5.1): the workspace plus agent config/temp roots.
+    home = os.path.expanduser("~")
+    roots = [WORKSPACE_ROOT, "/workspace/nextcraft-forge", "/tmp", os.path.join(home, ".gemini"), os.path.join(home, ".claude")]
+    for var in ("AGY_CONFIG_ROOT", "ANTIGRAVITY_CONFIG_ROOT", "CLAUDE_CONFIG_DIR", "TMPDIR"):
+        value = os.environ.get(var)
+        if value:
+            roots.append(value)
+    return [os.path.abspath(r) for r in roots]
+
+
+def is_outside_workspace(path: str) -> bool:
+    if not path or not os.path.isabs(path):
+        return False  # relative paths resolve against the agent's cwd (the project); nothing to decide here
+    abs_path = os.path.abspath(path)
+    for root in _allowed_write_roots():
+        if abs_path == root or abs_path.startswith(root.rstrip("/") + "/"):
+            return False
+    return True
 
 def check_file_mutation(args: dict):
     path = args.get("Path", "") or args.get("path", "")
@@ -65,6 +94,8 @@ def check_file_mutation(args: dict):
         or args.get("content", "")
         or ""
     )
+    if is_outside_workspace(path):
+        return {"decision": "deny", "reason": f"Blocked: writes are confined to {WORKSPACE_ROOT} (plus ~/.gemini, ~/.claude, /tmp, agent config root); got {path}"}
     if not is_protected_cognitive_file(path):
         return {"decision": "allow"}
 
