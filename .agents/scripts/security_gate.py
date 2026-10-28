@@ -15,6 +15,7 @@ MAX_MEMORY_BYTES = 24 * 1024  # 24 KB total budget
 
 # 1. Bash Command Hard-Blocked Patterns (Denied immediately before bash runs)
 DENY_CMD_PATTERNS = [
+    (r"\b(rm|unlink|shred|truncate)\b.*universal-agent-telemetry-protocol\.md", "Blocked by Immutable Protocol Guard: universal-agent-telemetry-protocol.md may only be upgraded, never deleted."),
     (r"unprivileged_bpf_disabled", "Blocked: Modifying unprivileged_bpf_disabled crashes Android system_server."),
     (r"rm\s+-[a-zA-Z]*r[a-zA-Z]*f[a-zA-Z]*\s+(/|/root|/workspace|~|\$HOME)(\s|$)", "Blocked: Catastrophic recursive deletion outside project subdir."),
     (r"\b(mkfs|fdisk|wipefs)\b", "Blocked: Disk formatting utilities are forbidden."),
@@ -86,7 +87,7 @@ def is_outside_workspace(path: str) -> bool:
             return False
     return True
 
-def check_file_mutation(args: dict):
+def check_file_mutation(args: dict, tool_name: str = ""):
     path = args.get("Path", "") or args.get("path", "")
     content = (
         args.get("Content", "")
@@ -104,6 +105,19 @@ def check_file_mutation(args: dict):
             return {"decision": "deny", "reason": reason}
 
     abs_path = os.path.abspath(path)
+    REQUIRED_PROTOCOL_ANCHORS = ("CORE-EXEC-001", "CORE-EXEC-002", "CORE-EXEC-003", "CORE-EXEC-004", "CORE-EXEC-005")
+    if os.path.exists(abs_path):
+        try:
+            existing_text = open(abs_path, "r", errors="replace").read()
+        except OSError:
+            existing_text = ""
+        missing_anchors = [a for a in REQUIRED_PROTOCOL_ANCHORS if a in existing_text and a not in content]
+        if missing_anchors and tool_name in ("write_file", "replace_file_content"):
+            return {
+                "decision": "deny",
+                "reason": f"Blocked by Immutable Protocol Guard: {os.path.basename(abs_path)} contains protected execution notes ({', '.join(missing_anchors)}) which may only be upgraded, never deleted."
+            }
+
     if abs_path in MEMORY_FILES:
         total_bytes = len(content.encode("utf-8"))
         for mem_file in MEMORY_FILES:
@@ -132,7 +146,7 @@ def main():
     args = tool_call.get("args", {})
 
     if tool_name in ("write_file", "edit_file", "replace_file_content", "multi_replace_file_content") or any(k in args for k in ("Path", "path", "TargetFile")):
-        result = check_file_mutation(args)
+        result = check_file_mutation(args, tool_name)
     else:
         result = check_command(args)
 
