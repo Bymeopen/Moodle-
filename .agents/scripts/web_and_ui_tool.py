@@ -1,12 +1,17 @@
 #!/usr/bin/env python3
 import argparse
 import html.parser
+import ipaddress
 import os
 import re
 import shutil
+import socket
 import subprocess
 import sys
+import urllib.parse
 import urllib.request
+
+MAX_FETCH_BYTES = 2 * 1024 * 1024  # cap response size to avoid memory exhaustion
 
 class SimpleHTMLToText(html.parser.HTMLParser):
     def __init__(self):
@@ -36,14 +41,32 @@ class SimpleHTMLToText(html.parser.HTMLParser):
         lines = [re.sub(r"\s+", " ", line).strip() for line in raw.splitlines()]
         return "\n".join(line for line in lines if line)
 
+def assert_public_url(url: str) -> None:
+    # SSRF guard: every address the host resolves to must be public (no loopback/private/link-local/reserved).
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme not in ("http", "https") or not parsed.hostname:
+        raise ValueError("Only http:// and https:// URLs are allowed.")
+    for info in socket.getaddrinfo(parsed.hostname, parsed.port or 443):
+        addr = ipaddress.ip_address(info[4][0].split("%")[0])
+        if not addr.is_global:
+            raise ValueError(f"Blocked non-public address {addr} for host {parsed.hostname}.")
+
+class PublicOnlyRedirectHandler(urllib.request.HTTPRedirectHandler):
+    # Re-validate each redirect target, otherwise a public URL could bounce to an internal one.
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        assert_public_url(newurl)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
 def fetch_web(url: str, max_chars: int = 6000) -> None:
     if not url.lower().startswith(("http://", "https://")):
         print(f"Error fetching {url}: Only http:// and https:// URLs are allowed.")
         sys.exit(1)
     req = urllib.request.Request(url, headers={"User-Agent": "HermesLite-Reader/2.0 (+NextCraftForge)"})
     try:
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            raw_html = resp.read().decode("utf-8", errors="replace")
+        assert_public_url(url)
+        opener = urllib.request.build_opener(PublicOnlyRedirectHandler)
+        with opener.open(req, timeout=10) as resp:
+            raw_html = resp.read(MAX_FETCH_BYTES).decode("utf-8", errors="replace")
     except Exception as e:
         print(f"Error fetching {url}: {e}")
         sys.exit(1)

@@ -3,14 +3,24 @@ import argparse
 import glob
 import json
 import os
+import re
 import sqlite3
 import sys
 from datetime import datetime, timezone
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 WORKSPACE_ROOT = os.path.abspath(os.path.join(SCRIPT_DIR, "../.."))
+sys.path.insert(0, SCRIPT_DIR)
+from security_gate import SECRET_AND_INJECTION_PATTERNS  # single source of truth for secret patterns
+
 DB_PATH = os.path.join(WORKSPACE_ROOT, ".agents/memory/history.db")
 BRAIN_GLOB = "/root/.gemini/antigravity-cli/brain/*/.system_generated/logs/transcript.jsonl"
+
+def redact_secrets(text: str) -> str:
+    # history.db is plain-text and searchable: never persist credentials or injected instructions.
+    for pattern, _ in SECRET_AND_INJECTION_PATTERNS:
+        text = re.sub(pattern, "[REDACTED]", text)
+    return text
 
 def get_db() -> sqlite3.Connection:
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
@@ -52,7 +62,7 @@ def sync_transcripts(conn: sqlite3.Connection) -> int:
                     unique_key = f"{session_id}:{step_idx}:{step_type}"
                     if conn.execute("SELECT 1 FROM indexed_steps WHERE unique_key = ?", (unique_key,)).fetchone():
                         continue
-                    conn.execute("INSERT INTO memory_fts (session_id, step_id, source, created_at, content) VALUES (?, ?, ?, ?, ?)", (session_id, step_idx, source, created_at, content_clean[:8000]))
+                    conn.execute("INSERT INTO memory_fts (session_id, step_id, source, created_at, content) VALUES (?, ?, ?, ?, ?)", (session_id, step_idx, source, created_at, redact_secrets(content_clean)[:8000]))
                     conn.execute("INSERT INTO indexed_steps (unique_key, indexed_at) VALUES (?, ?)", (unique_key, now_str))
                     added += 1
         except OSError:
@@ -63,7 +73,7 @@ def sync_transcripts(conn: sqlite3.Connection) -> int:
 def log_note(conn: sqlite3.Connection, title: str, text: str) -> None:
     now_str = datetime.now(timezone.utc).isoformat()
     unique_key = f"note:{now_str}:{title}"
-    conn.execute("INSERT INTO memory_fts (session_id, step_id, source, created_at, content) VALUES (?, ?, ?, ?, ?)", ("episodic-note", "note", "AGENT_NOTE", now_str, f"[{title}] {text}"))
+    conn.execute("INSERT INTO memory_fts (session_id, step_id, source, created_at, content) VALUES (?, ?, ?, ?, ?)", ("episodic-note", "note", "AGENT_NOTE", now_str, redact_secrets(f"[{title}] {text}")))
     conn.execute("INSERT INTO indexed_steps (unique_key, indexed_at) VALUES (?, ?)", (unique_key, now_str))
     conn.commit()
     print(f"Logged episodic note: {title}")

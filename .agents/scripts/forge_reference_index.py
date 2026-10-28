@@ -29,6 +29,17 @@ SYMBOL_PATTERNS = [
     ("const", re.compile(r"^\s*(?:(?:public|private|protected|internal|const|static|final)\s+)*(?:val|var|const|let)\s+([A-Za-z_][A-Za-z0-9_]*)\s*[:=]")),
 ]
 
+def _is_within(path: str, root: str) -> bool:
+    # commonpath compares whole path components, so "/workspace-evil" is not inside "/workspace".
+    try:
+        return os.path.commonpath([path, root]) == root
+    except ValueError:
+        return False
+
+def _project_root_of(db_path: str) -> str:
+    # <root>/.agents/memory/<db> -> <root>
+    return os.path.dirname(os.path.dirname(os.path.dirname(db_path)))
+
 def _resolve_db_path(target_dir: str = "") -> str:
     if target_dir:
         real = os.path.realpath(os.path.abspath(target_dir))
@@ -66,21 +77,23 @@ def _extract_symbols(lines: list) -> list:
 
 def autoindex(root_dir: str, force: bool = False) -> dict:
     real_root = os.path.realpath(os.path.abspath(root_dir or WORKSPACE_ROOT))
-    if not (real_root.startswith("/workspace") or real_root.startswith("/tmp")):
+    if not (_is_within(real_root, "/workspace") or _is_within(real_root, "/tmp")):
         raise ValueError(f"Indexing restricted to /workspace or /tmp (got {real_root})")
     db_path = _resolve_db_path(real_root)
     conn = get_db(db_path)
     t0 = time.time()
     indexed_files, skipped_unchanged = 0, 0
     existing = {row[0]: (row[1], row[2]) for row in conn.execute("SELECT file_path, mtime, size_bytes FROM indexed_files").fetchall()}
+    memory_dir = os.path.dirname(db_path)  # the index/history databases live here; never index them
+    seen_files = set()
     for dirpath, dirnames, filenames in os.walk(real_root):
-        dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS and not d.startswith(".git") and d != "memory"]
+        dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS and os.path.join(dirpath, d) != memory_dir]
         for fname in filenames:
             _, ext = os.path.splitext(fname)
             if ext.lower() not in INDEXABLE_EXTS:
                 continue
             fpath = os.path.realpath(os.path.join(dirpath, fname))
-            if not fpath.startswith(real_root):
+            if not _is_within(fpath, real_root):
                 continue
             try:
                 st = os.stat(fpath)
@@ -89,6 +102,7 @@ def autoindex(root_dir: str, force: bool = False) -> dict:
             if st.st_size <= 0 or st.st_size > 1024 * 1024:
                 continue
             rel_path = os.path.relpath(fpath, real_root)
+            seen_files.add(rel_path)
             if not force and rel_path in existing:
                 old_mtime, old_size = existing[rel_path]
                 if abs(st.st_mtime - old_mtime) < 0.001 and st.st_size == old_size:
@@ -121,6 +135,15 @@ def autoindex(root_dir: str, force: bool = False) -> dict:
                     break
             conn.execute("INSERT OR REPLACE INTO indexed_files (file_path, mtime, size_bytes, total_lines) VALUES (?, ?, ?, ?)", (rel_path, st.st_mtime, st.st_size, len(lines)))
             indexed_files += 1
+    # Prune entries of deleted/now-unindexable files, but only when walking the project root that owns this DB
+    # (a sub-directory or shared-DB walk only sees part of the tree and would wipe valid entries).
+    removed_files = 0
+    if _project_root_of(db_path) == real_root:
+        for stale in set(existing) - seen_files:
+            conn.execute("DELETE FROM code_passages_fts WHERE file_path = ?", (stale,))
+            conn.execute("DELETE FROM symbol_defs WHERE file_path = ?", (stale,))
+            conn.execute("DELETE FROM indexed_files WHERE file_path = ?", (stale,))
+            removed_files += 1
     conn.commit()
     elapsed = round(time.time() - t0, 2)
     return {
@@ -128,6 +151,7 @@ def autoindex(root_dir: str, force: bool = False) -> dict:
         "dbPath": db_path,
         "updatedFiles": indexed_files,
         "unchangedFiles": skipped_unchanged,
+        "removedFiles": removed_files,
         "totalFiles": conn.execute("SELECT COUNT(*) FROM indexed_files").fetchone()[0],
         "totalPassages": conn.execute("SELECT COUNT(*) FROM code_passages_fts").fetchone()[0],
         "totalSymbols": conn.execute("SELECT COUNT(*) FROM symbol_defs").fetchone()[0],
@@ -146,17 +170,29 @@ def _record_gain(conn: sqlite3.Connection, qtype: str, qtext: str, matched_files
     conn.commit()
     return saved_tokens
 
-def search_code(query: str, root_dir: str = "", limit: int = 5) -> str:
+def _refresh_index(real_root: str) -> None:
+    db_path = _resolve_db_path(real_root)
+    project_root = _project_root_of(db_path)
+    # Queries from a sub-directory refresh the whole project so relative paths stay consistent.
+    target = project_root if _is_within(real_root, project_root) else real_root
+    try:
+        autoindex(target)
+    except ValueError:
+        pass  # root outside the indexable area: query whatever is already indexed
+
+def search_code(query: str, root_dir: str = "", limit: int = 5, refresh: bool = True) -> str:
     real_root = os.path.realpath(os.path.abspath(root_dir or WORKSPACE_ROOT))
     conn = get_db(_resolve_db_path(real_root))
-    if conn.execute("SELECT COUNT(*) FROM indexed_files").fetchone()[0] == 0:
-        autoindex(real_root)
+    if refresh:
+        _refresh_index(real_root)
     sql = "SELECT file_path, start_line, end_line, symbol_context, content, bm25(code_passages_fts) AS rank FROM code_passages_fts WHERE code_passages_fts MATCH ? ORDER BY rank LIMIT ?"
     try:
         rows = conn.execute(sql, (query, limit)).fetchall()
     except sqlite3.OperationalError:
-        safe_q = " OR ".join(f'"{w}"' for w in re.findall(r"[A-Za-z0-9_]+", query) if len(w) > 1) or f'"{query}"'
-        rows = conn.execute(sql, (safe_q, limit)).fetchall()
+        # Fall back to plain alphanumeric tokens: they can never contain FTS5 syntax or quotes.
+        tokens = re.findall(r"[A-Za-z0-9_]+", query)
+        safe_q = " OR ".join(f'"{w}"' for w in tokens if len(w) > 1) or " OR ".join(f'"{w}"' for w in tokens)
+        rows = conn.execute(sql, (safe_q, limit)).fetchall() if safe_q else []
     if not rows:
         return f"No code passages matched query: `{query}`"
     out, matched_files = [f"### Forge Reference Index — BM25 Code Search: `{query}` (Top {len(rows)})"], set()
@@ -170,11 +206,11 @@ def search_code(query: str, root_dir: str = "", limit: int = 5) -> str:
         result_text += f"\n\n> **Token Gain**: Saved ~`{saved:,}` tokens vs reading {len(matched_files)} full file(s)."
     return result_text
 
-def lookup_symbol(symbol: str, root_dir: str = "", limit: int = 10) -> str:
+def lookup_symbol(symbol: str, root_dir: str = "", limit: int = 10, refresh: bool = True) -> str:
     real_root = os.path.realpath(os.path.abspath(root_dir or WORKSPACE_ROOT))
     conn = get_db(_resolve_db_path(real_root))
-    if conn.execute("SELECT COUNT(*) FROM indexed_files").fetchone()[0] == 0:
-        autoindex(real_root)
+    if refresh:
+        _refresh_index(real_root)
     rows = conn.execute("SELECT symbol_name, kind, file_path, line_num, signature FROM symbol_defs WHERE symbol_name = ? OR symbol_name LIKE ? ORDER BY (symbol_name = ?) DESC, symbol_name ASC LIMIT ?", (symbol, f"%{symbol}%", symbol, limit)).fetchall()
     if not rows:
         return f"No symbol definition found for `{symbol}`."
@@ -191,13 +227,12 @@ def lookup_symbol(symbol: str, root_dir: str = "", limit: int = 10) -> str:
 def batch_search(queries: list, symbols: list = None, root_dir: str = "", limit_per_query: int = 3) -> str:
     real_root = os.path.realpath(os.path.abspath(root_dir or WORKSPACE_ROOT))
     conn = get_db(_resolve_db_path(real_root))
-    if conn.execute("SELECT COUNT(*) FROM indexed_files").fetchone()[0] == 0:
-        autoindex(real_root)
+    _refresh_index(real_root)
     sections = ["## Forge Reference Index — Batch Search Results"]
     for s in (symbols or [])[:10]:
-        sections.append(lookup_symbol(str(s), real_root, limit=5))
+        sections.append(lookup_symbol(str(s), real_root, limit=5, refresh=False))
     for q in (queries or [])[:10]:
-        sections.append(search_code(str(q), real_root, limit=limit_per_query))
+        sections.append(search_code(str(q), real_root, limit=limit_per_query, refresh=False))
     return "\n\n---\n\n".join(sections)
 
 def gain_report(root_dir: str = "") -> str:

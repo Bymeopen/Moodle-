@@ -19,9 +19,10 @@ def audit_skills() -> bool:
     ok, count = True, 0
     for root, _, files in os.walk(SKILLS_DIR):
         for f in files:
-            if f.endswith(".md"):
+            p = os.path.join(root, f)
+            # Audit every regular file (not only .md): export bundles the whole skills tree.
+            if os.path.isfile(p) and not os.path.islink(p):
                 count += 1
-                p = os.path.join(root, f)
                 with open(p, "r", encoding="utf-8", errors="replace") as fh:
                     text = fh.read()
                 for pattern, reason in SECRET_AND_INJECTION_PATTERNS:
@@ -34,6 +35,10 @@ def audit_skills() -> bool:
 
 def export_bundle(out_path: str) -> None:
     if not audit_skills():
+        sys.exit(1)
+    out_real, skills_real = os.path.realpath(out_path), os.path.realpath(SKILLS_DIR)
+    if os.path.commonpath([out_real, skills_real]) == skills_real:
+        print("Error: output bundle must not be written inside the skills directory.")
         sys.exit(1)
     with tarfile.open(out_path, "w:gz") as tar:
         tar.add(SKILLS_DIR, arcname="skills")

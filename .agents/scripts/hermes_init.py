@@ -13,8 +13,8 @@ def make_executable(path: str) -> None:
     os.chmod(path, st.st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
 
 def bootstrap_workspace(target_dir: str) -> None:
-    target_dir = os.path.abspath(target_dir)
-    if not target_dir.startswith("/workspace"):
+    target_dir = os.path.realpath(target_dir)
+    if target_dir != "/workspace" and not target_dir.startswith("/workspace/"):
         print(f"Error: Target directory must be inside /workspace (got {target_dir})")
         sys.exit(1)
     for sub in (".agents/memory", ".agents/scripts", ".agents/skills"):
