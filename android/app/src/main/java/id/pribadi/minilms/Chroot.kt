@@ -133,9 +133,17 @@ printf 'nameserver 1.1.1.1\nnameserver 8.8.8.8\n' > ${'$'}R/etc/resolv.conf
     fun aiSetupScript(courses: String, copyMaterials: Boolean) = HEAD + """
 grep -q '^ai:' ${'$'}R/etc/passwd || echo 'ai:x:$AI_UID:$AI_UID:AI sandbox:/home/ai:/bin/sh' >> ${'$'}R/etc/passwd
 grep -q '^ai:' ${'$'}R/etc/group || echo 'ai:x:$AI_UID:' >> ${'$'}R/etc/group
-mkdir -p ${'$'}R/home/ai/work
+mkdir -p ${'$'}R/home/ai/work ${'$'}R/home/ai/bridge ${'$'}R/usr/local/bin ${'$'}R/usr/local/share
 chown $AI_UID:$AI_UID ${'$'}R/home/ai ${'$'}R/home/ai/work
 chmod 755 ${'$'}R/home/ai ${'$'}R/home/ai/work
+chown 0:0 ${'$'}R/home/ai/bridge; chmod 755 ${'$'}R/home/ai/bridge
+cat > ${'$'}R/usr/local/bin/moodle <<'MOODLE_CLI_EOF'
+${MoodleBridge.cliScript()}MOODLE_CLI_EOF
+chown 0:0 ${'$'}R/usr/local/bin/moodle; chmod 755 ${'$'}R/usr/local/bin/moodle
+cat > ${'$'}R/usr/local/share/moodle-ops.txt <<'MOODLE_OPS_EOF'
+${MoodleBridge.help()}
+MOODLE_OPS_EOF
+chmod 644 ${'$'}R/usr/local/share/moodle-ops.txt
 """ + (if (copyMaterials) """
 rm -rf ${'$'}R/home/ai/lms
 mkdir -p ${'$'}R/home/ai/lms
@@ -151,7 +159,7 @@ fi
      * Jalankan [cmd] **bukan sebagai root**: `su ai` (hak diturunkan, grup tambahan dibuang sehingga tanpa grup inet Android), di namespace jaringan kosong
      * (`unshare -n`) bila kernel mendukung. /dev hanya null/zero/urandom/random bila /dev penuh tidak sedang di-mount; tanpa /sdcard dan tanpa data aplikasi.
      */
-    fun aiExecScript(cmd: String, timeoutSec: Int = 50) = HEAD + """
+    fun aiExecScript(cmd: String, timeoutSec: Int = 50, bridgeDir: String? = null) = HEAD + """
 mkdir -p ${'$'}R/dev ${'$'}R/etc
 if ! grep -q " ${'$'}R/dev " /proc/mounts; then
   for n in null zero urandom random; do
@@ -161,12 +169,19 @@ if ! grep -q " ${'$'}R/dev " /proc/mounts; then
 fi
 NS=""
 if chroot ${'$'}R /usr/bin/unshare -n /bin/true 2>/dev/null; then NS="/usr/bin/unshare -n"; else echo "PERINGATAN: isolasi jaringan tidak tersedia di kernel ini"; fi
+""" + (if (bridgeDir != null) """
+mkdir -p ${'$'}R/home/ai/bridge
+grep -q " ${'$'}R/home/ai/bridge " /proc/mounts || mount --bind ${shQuote(bridgeDir)} ${'$'}R/home/ai/bridge || echo "PERINGATAN: jembatan Moodle tidak aktif"
+""" else "") + """
 chroot ${'$'}R /usr/bin/env -i HOME=/home/ai TERM=dumb PATH=$PATH ${'$'}NS /bin/su -s /bin/sh -c ${shQuote(aiInner(cmd, timeoutSec))} ai 2>&1
-"""
+""" + (if (bridgeDir != null) """RC=${'$'}?
+grep -q " ${'$'}R/home/ai/bridge " /proc/mounts && umount ${'$'}R/home/ai/bridge
+exit ${'$'}RC
+""" else "")
 
     /** Lepas semua mount berurutan terbalik; mengeluarkan MASIH_ADA_MOUNT bila ada yang gagal. */
     fun unmountScript() = HEAD + """
-for d in mnt/library mnt/lms mnt/sdcard dev dev/null dev/zero dev/urandom dev/random sys proc; do grep -q " ${'$'}R/${'$'}d " /proc/mounts && umount ${'$'}R/${'$'}d; done
+for d in home/ai/bridge mnt/library mnt/lms mnt/sdcard dev dev/null dev/zero dev/urandom dev/random sys proc; do grep -q " ${'$'}R/${'$'}d " /proc/mounts && umount ${'$'}R/${'$'}d; done
 if grep -q " ${'$'}R/" /proc/mounts; then echo MASIH_ADA_MOUNT; exit 3; fi
 echo OK
 """
@@ -177,7 +192,7 @@ echo OK
 
     /** Hapus Linux: menolak bila masih ada mount di bawah ROOT (rm -rf lewat bind-mount akan menghapus penyimpanan asli). */
     fun removeScript() = HEAD + """
-for d in mnt/library mnt/lms mnt/sdcard dev dev/null dev/zero dev/urandom dev/random sys proc; do grep -q " ${'$'}R/${'$'}d " /proc/mounts && umount ${'$'}R/${'$'}d; done
+for d in home/ai/bridge mnt/library mnt/lms mnt/sdcard dev dev/null dev/zero dev/urandom dev/random sys proc; do grep -q " ${'$'}R/${'$'}d " /proc/mounts && umount ${'$'}R/${'$'}d; done
 if grep -q " ${'$'}R/" /proc/mounts; then echo MASIH_ADA_MOUNT_DIBATALKAN; exit 3; fi
 rm -rf ${'$'}R && echo OK
 """
@@ -199,6 +214,8 @@ class LinuxController(
     private val download: (String, File, Long, (Long) -> Unit) -> Unit = { url, dest, max, onBytes -> PublicHttp.download(url, dest, max, { false }, onBytes) },
     private val abis: () -> List<String> = { android.os.Build.SUPPORTED_ABIS.toList() },
     private val extract: (File, File) -> List<Pair<String, Int>> = { src, dest -> TarGz.extract(src, dest) },
+    /** Spool jembatan Moodle baca-saja untuk perintah AI; null bila belum login. Token tetap di aplikasi (lihat [MoodleBridge]). */
+    private val bridge: () -> BridgeSpool? = { null },
 ) {
     private val _state = MutableStateFlow(LinuxState())
     val state: StateFlow<LinuxState> = _state
@@ -306,7 +323,9 @@ class LinuxController(
             val fresh = System.currentTimeMillis() - aiSetupAt < 30 * 60_000L
             if (!fresh) { val s = aiSetup(copy = aiSetupAt == 0L); if (!s.contains("AI_SIAP")) return "Sandbox AI gagal disiapkan: ${s.take(300)}" }
             log("[AI] $ ${c.take(300)}")
-            val r = runner.run(Chroot.aiExecScript(c), 75)
+            val spool = bridge()
+            val r = if (spool == null) runner.run(Chroot.aiExecScript(c), 75)
+                    else spool.serve { runner.run(Chroot.aiExecScript(c, bridgeDir = spool.dir.absolutePath), 75) }
             val out = r.out.trim()
             log(out.take(2000).ifEmpty { "(tanpa keluaran)" })
             return (out.take(6000).ifEmpty { "(tanpa keluaran)" }) + if (r.exit != 0) "\n(kode keluar ${r.exit})" else ""
