@@ -58,7 +58,7 @@ fun LinuxContent(s: LinuxState, a: LinuxActions, aiMode: LinuxAiMode = LinuxAiMo
         Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             if (!s.installed) Button({ confirm = "install" }, enabled = !s.busy && s.rootOk != false) { Icon(Icons.Rounded.Download, null, Modifier.size(18.dp)); Spacer(Modifier.width(6.dp)); Text(if (s.bundled) "Pasang Alpine (dari bundel)" else "Pasang Alpine (±4 MB unduh)") }
             else {
-                FilledTonalButton(a.installTools, enabled = !s.busy) { Text("Pasang Python & PDF") }
+                FilledTonalButton(a.installTools, enabled = !s.busy) { Text("Pasang Python, PDF & jq") }
                 FilledTonalButton(a.mount, enabled = !s.busy) { Text("Mount") }
                 FilledTonalButton(a.unmount, enabled = !s.busy) { Text("Lepas mount") }
                 OutlinedButton({ confirm = "remove" }, enabled = !s.busy) { Text("Hapus", color = cs.error) }

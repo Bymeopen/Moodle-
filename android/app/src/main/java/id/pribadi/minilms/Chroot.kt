@@ -159,6 +159,10 @@ cat > ${'$'}R/usr/local/share/moodle-ops.txt <<'MOODLE_OPS_EOF'
 ${MoodleBridge.help()}
 MOODLE_OPS_EOF
 chmod 644 ${'$'}R/usr/local/share/moodle-ops.txt
+mkdir -p ${'$'}R/usr/local/lib
+cat > ${'$'}R/usr/local/lib/moodle.py <<'MOODLE_PY_EOF'
+${MoodleBridge.pythonModule().trimStart()}MOODLE_PY_EOF
+chown 0:0 ${'$'}R/usr/local/lib/moodle.py; chmod 644 ${'$'}R/usr/local/lib/moodle.py
 """ + (if (copyMaterials) """
 rm -rf ${'$'}R/home/ai/lms
 mkdir -p ${'$'}R/home/ai/lms
@@ -188,7 +192,7 @@ if chroot ${'$'}R /usr/bin/unshare -n /bin/true 2>/dev/null; then NS="/usr/bin/u
 mkdir -p ${'$'}R/home/ai/bridge
 grep -q " ${'$'}R/home/ai/bridge " /proc/mounts || mount --bind ${shQuote(bridgeDir)} ${'$'}R/home/ai/bridge || echo "PERINGATAN: jembatan Moodle tidak aktif"
 """ else "") + """
-chroot ${'$'}R /usr/bin/env -i HOME=/home/ai TERM=dumb PATH=$PATH ${'$'}NS /bin/su -s /bin/sh -c ${shQuote(aiInner(cmd, timeoutSec))} ai 2>&1
+chroot ${'$'}R /usr/bin/env -i HOME=/home/ai TERM=dumb PATH=$PATH PYTHONPATH=/usr/local/lib ${'$'}NS /bin/su -s /bin/sh -c ${shQuote(aiInner(cmd, timeoutSec))} ai 2>&1
 """ + (if (bridgeDir != null) """RC=${'$'}?
 grep -q " ${'$'}R/home/ai/bridge " /proc/mounts && umount ${'$'}R/home/ai/bridge
 exit ${'$'}RC
@@ -307,8 +311,8 @@ class LinuxController(
         statusNow()
     }
 
-    /** Paket pengolah materi: Python, pypdf, poppler (teks PDF). */
-    fun installTools(): Job? = exec("apk update && apk add --no-cache python3 py3-pip py3-pypdf poppler-utils && echo SELESAI", timeoutSec = 900, label = "Memasang Python & alat PDF…")
+    /** Paket pengolah materi: Python, pypdf, poppler (teks PDF), jq (olah JSON keluaran `moodle`). */
+    fun installTools(): Job? = exec("apk update && apk add --no-cache python3 py3-pip py3-pypdf poppler-utils jq && echo SELESAI", timeoutSec = 900, label = "Memasang Python, PDF & jq…")
 
     fun exec(cmd: String, timeoutSec: Long = 90, label: String = "Menjalankan…"): Job? {
         val c = cmd.trim(); if (c.isEmpty() || c.length > 4000) return null

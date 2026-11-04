@@ -122,6 +122,27 @@ class MoodleBridgeTest {
         assertTrue(on.contains("unshare -n"))                                                                          // isolasi jaringan tidak berubah
         assertTrue(Chroot.unmountScript().indexOf("home/ai/bridge") in 0 until Chroot.unmountScript().indexOf("mnt/library"))   // dilepas lebih dulu, sebelum rm -rf bisa terjadi
         val setup = Chroot.aiSetupScript("/c", false); assertTrue(setup.contains("MOODLE_CLI_EOF") && setup.contains("chown 0:0 \$R/usr/local/bin/moodle"))
+        assertTrue(setup.contains("MOODLE_PY_EOF") && setup.contains("chmod 644 \$R/usr/local/lib/moodle.py")); assertTrue(off.contains("PYTHONPATH=/usr/local/lib"))
+        assertFalse(MoodleBridge.pythonModule().contains("MOODLE_PY_EOF") || MoodleBridge.cliScript().contains("MOODLE_CLI_EOF") || MoodleBridge.help().contains("MOODLE_OPS_EOF"))   // heredoc tak tertutup dini
+    }
+
+    @Test fun pythonModuleCompilesAndTalksToSpool() {
+        val py = listOf("/usr/bin/python3", "/usr/local/bin/python3").firstOrNull { File(it).exists() }; assumeTrue(py != null)
+        val lib = Files.createTempDirectory("pylib").toFile(); val dir = Files.createTempDirectory("spool").toFile()
+        File(lib, "moodle.py").writeText(MoodleBridge.pythonModule().trimStart().replace("/home/ai/bridge", dir.absolutePath))
+        fun run(code: String): Pair<Int, String> {
+            val pb = ProcessBuilder(py, "-E", "-s", "-c", "import sys; sys.path.insert(0, '${lib.absolutePath}')\n" + code).redirectErrorStream(true)   // tanpa env/site pengguna; modul dari folder tes
+            val p = pb.start(); val o = p.inputStream.bufferedReader().readText(); return p.waitFor() to o.trim()
+        }
+        run("import py_compile; py_compile.compile('${lib.absolutePath}/moodle.py', doraise=True)").let { assertEquals(it.second, 0, it.first) }
+        val s = BridgeSpool(dir, pollMs = 10) { req -> if (req.contains("\"nope\"")) """{"ok":false,"error":"operasi tidak dikenal"}""" else """{"ok":true,"data":{"saw":$req}}""" }
+        val (code, out) = s.serve { run("import moodle, json; print(json.dumps(moodle.call('contents', courseid=5)))") }
+        assertEquals(out, 0, code); assertEquals("""{"saw": {"op": "contents", "courseid": 5}}""", out)
+        val (c2, o2) = s.serve { run("import moodle\ntry: moodle.call('nope')\nexcept moodle.BridgeError as e: print('ditolak:', e)") }
+        assertEquals(0, c2); assertEquals("ditolak: operasi tidak dikenal", o2)
+        for (bad in listOf("moodle.call('Courses')", "moodle.call('a;b')", "moodle.call('contents', courseid='5')", "moodle.call('contents', courseid=0)", "moodle.call('contents', courseid=True)", "moodle.call('contents', **{'Course': 1})"))
+            assertEquals(bad, 0, run("import moodle\ntry: $bad\nexcept ValueError: print('ok')").let { assertEquals(bad, "ok", it.second); it.first })
+        assertEquals(0, dir.listFiles()!!.size)                                                                          // input buruk tidak pernah menulis ke spool
     }
 
     @Test fun agentCodeStillCannotReachRootAndBridgeHasNoToken() {

@@ -98,7 +98,8 @@ object MoodleBridge {
     val localOperations: List<String> get() = OPS.filterValues { it.local != null }.keys.toList()
     /** Fungsi WS yang bisa tercapai lewat jembatan (untuk pagar tes: semuanya harus fungsi baca `*_get_*`). */
     val functions: List<String> get() = OPS.values.mapNotNull { it.fn }
-    fun help(): String = OPS.entries.joinToString("\n") { (k, o) -> "moodle $k${o.args.keys.joinToString("") { if (it in o.optional) " [$it=ANGKA]" else " $it=ANGKA" }}  # ${o.about}" }
+    fun help(): String = OPS.entries.joinToString("\n") { (k, o) -> "moodle $k${o.args.keys.joinToString("") { if (it in o.optional) " [$it=ANGKA]" else " $it=ANGKA" }}  # ${o.about}" } +
+        "\n\nKeluaran JSON: {\"ok\":true,\"data\":...} atau {\"ok\":false,\"error\":...}. Python: import moodle; moodle.call(\"contents\", courseid=5). Pipa ke jq bila terpasang."
 
     /** Nama field yang tidak boleh keluar ke sandbox, di tingkat mana pun. */
     private fun secret(key: String): Boolean {
@@ -148,6 +149,75 @@ object MoodleBridge {
         catch (e: IllegalArgumentException) { err(e.message ?: "argumen tidak valid") }
         catch (e: Exception) { err("gagal memanggil Moodle: ${e.javaClass.simpleName}") }
     }
+
+    /**
+     * Modul Python `moodle` di sandbox (`/usr/local/lib/moodle.py`, lewat PYTHONPATH): `moodle.call("contents", courseid=5)` -> data (dict/list/str),
+     * `BridgeError` bila ditolak. Validasi yang sama dengan skrip shell: op `[a-z_]`, argumen nama huruf kecil = bilangan bulat positif.
+     */
+    fun pythonModule(): String = """
+'''Jembatan Moodle baca-saja dari sandbox Mini LMS (tanpa jaringan, tanpa token).
+
+    import moodle
+    kursus = moodle.call("courses")                 # Web Service (dipanggil aplikasi)
+    isi    = moodle.call("contents", courseid=5)
+    off    = moodle.call("offline")                 # data offline aplikasi
+    moodle.call("sync")                             # kendali aplikasi (bukan tulis ke Moodle)
+    moodle.ops()                                    # daftar operasi
+'''
+import json, os, time
+
+BRIDGE = "/home/ai/bridge"
+OPS_FILE = "/usr/local/share/moodle-ops.txt"
+
+
+class BridgeError(Exception):
+    '''Permintaan ditolak aplikasi atau jembatan tidak aktif.'''
+
+
+def call(op, **args):
+    if not os.path.isdir(BRIDGE):
+        raise BridgeError("jembatan Moodle tidak aktif (hanya ada saat dijalankan lewat alat linux_exec)")
+    if not isinstance(op, str) or not op or op != op.lower() or not op.replace("_", "").isalpha():
+        raise ValueError("nama operasi tidak valid")
+    for k, v in args.items():
+        if not k.isalpha() or k != k.lower() or isinstance(v, bool) or not isinstance(v, int) or v <= 0:
+            raise ValueError("argumen harus nama huruf kecil dengan nilai bilangan bulat positif")
+    rid = os.urandom(8).hex()
+    tmp = os.path.join(BRIDGE, "tmp-" + rid)
+    req = os.path.join(BRIDGE, "req-%s.json" % rid)
+    res = os.path.join(BRIDGE, "res-%s.json" % rid)
+    with open(tmp, "w") as f:
+        json.dump(dict(op=op, **args), f)
+    os.rename(tmp, req)
+    for _ in range(150):
+        if os.path.exists(res):
+            with open(res) as f:
+                data = json.load(f)
+            os.remove(res)
+            if not data.get("ok"):
+                raise BridgeError(data.get("error", "galat"))
+            return data.get("data")
+        time.sleep(0.2)
+    try:
+        os.remove(req)
+    except OSError:
+        pass
+    raise BridgeError("waktu habis menunggu aplikasi")
+
+
+def ops():
+    with open(OPS_FILE) as f:
+        print(f.read())
+
+
+if __name__ == "__main__":
+    import sys
+    if len(sys.argv) < 2 or sys.argv[1] == "help":
+        ops()
+    else:
+        kw = {k: int(v) for k, v in (a.split("=", 1) for a in sys.argv[2:])}
+        print(json.dumps(call(sys.argv[1], **kw), ensure_ascii=False, indent=1))
+"""
 
     /** Skrip `moodle` di dalam sandbox: hanya menerima nama operasi `[a-z_]` dan argumen `nama=angka`, lalu bertukar berkas dengan aplikasi. */
     fun cliScript(): String = """#!/bin/sh
