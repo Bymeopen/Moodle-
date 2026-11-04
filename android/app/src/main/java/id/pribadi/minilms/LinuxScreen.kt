@@ -56,7 +56,7 @@ fun LinuxContent(s: LinuxState, a: LinuxActions, aiMode: LinuxAiMode = LinuxAiMo
             }
         }
         Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            if (!s.installed) Button({ confirm = "install" }, enabled = !s.busy && s.rootOk != false) { Icon(Icons.Rounded.Download, null, Modifier.size(18.dp)); Spacer(Modifier.width(6.dp)); Text("Pasang Alpine (±4 MB)") }
+            if (!s.installed) Button({ confirm = "install" }, enabled = !s.busy && s.rootOk != false) { Icon(Icons.Rounded.Download, null, Modifier.size(18.dp)); Spacer(Modifier.width(6.dp)); Text(if (s.bundled) "Pasang Alpine (dari bundel)" else "Pasang Alpine (±4 MB unduh)") }
             else {
                 FilledTonalButton(a.installTools, enabled = !s.busy) { Text("Pasang Python & PDF") }
                 FilledTonalButton(a.mount, enabled = !s.busy) { Text("Mount") }
@@ -105,7 +105,7 @@ fun LinuxContent(s: LinuxState, a: LinuxActions, aiMode: LinuxAiMode = LinuxAiMo
     }
     when (confirm) {
         "install" -> AlertDialog({ confirm = "" }, title = { Text("Pasang Alpine Linux?") },
-            text = { Text("Mengunduh rootfs resmi Alpine (±4 MB), memverifikasi checksum SHA-256, lalu mengekstraknya sebagai root ke /data/local/minilms-chroot. Aplikasi meminta izin root dari manajer root Anda.") },
+            text = { Text((if (s.bundled) "Memakai rootfs resmi Alpine yang sudah ada di dalam aplikasi (tanpa unduhan)" else "Mengunduh rootfs resmi Alpine (±4 MB)") + ", memverifikasi checksum SHA-256, lalu mengekstraknya sebagai root ke /data/local/minilms-chroot. Aplikasi meminta izin root dari manajer root Anda.") },
             confirmButton = { TextButton({ confirm = ""; a.install() }) { Text("Pasang") } }, dismissButton = { TextButton({ confirm = "" }) { Text("Batal") } })
         "remove" -> AlertDialog({ confirm = "" }, title = { Text("Hapus Linux dari ponsel?") },
             text = { Text("Semua isi Linux (paket dan file di dalamnya) dihapus. Mount dilepas lebih dulu; bila masih ada yang tersangkut, penghapusan dibatalkan demi keamanan penyimpananmu.") },

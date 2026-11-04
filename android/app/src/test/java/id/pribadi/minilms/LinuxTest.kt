@@ -133,11 +133,47 @@ class LinuxControllerTest {
         }
     }
 
-    private fun controller(root: FakeRoot, sha: String = goodSha, abis: List<String> = listOf("arm64-v8a"), onDownload: () -> Unit = {}): LinuxController {
+    private fun controller(root: FakeRoot, sha: String = goodSha, abis: List<String> = listOf("arm64-v8a"), onDownload: () -> Unit = {}, bundle: (String) -> Chroot.Bundle? = { null }, onFetch: () -> Unit = {}): LinuxController {
         val dir = kotlin.io.path.createTempDirectory("lx").toFile()
         return LinuxController(CoroutineScope(SupervisorJob() + Dispatchers.Default), dir, File(dir, "courses"), File(dir, "library"), root,
-            fetch = { yaml.replace("%SHA%", sha) }, download = { _, dest, _, onBytes -> onDownload(); dest.writeBytes(payload); onBytes(5) }, abis = { abis },
-            extract = { _, stage -> stage.mkdirs(); listOf("bin" to 493, "bin/sh" to 493) })
+            fetch = { onFetch(); yaml.replace("%SHA%", sha) }, download = { _, dest, _, onBytes -> onDownload(); dest.writeBytes(payload); onBytes(5) }, abis = { abis },
+            extract = { _, stage -> stage.mkdirs(); listOf("bin" to 493, "bin/sh" to 493) }, bundle = bundle)
+    }
+
+    private fun bundleOf(sha: String, arch: String = "aarch64", bytes: ByteArray = payload) = Chroot.Bundle(Chroot.Release("alpine-minirootfs-3.24.3-$arch.tar.gz", sha, bytes.size.toLong(), "asset:x")) { bytes.inputStream() }
+
+    @Test fun parseManifestValidatesArchFileAndHash() {
+        val m = "# komentar\nfile=alpine-minirootfs-3.24.3-aarch64.tar.gz\nasset=rootfs.bin\nsha256=$goodSha\nversion=3.24.3\narch=aarch64\n"
+        assertEquals(Chroot.Release("alpine-minirootfs-3.24.3-aarch64.tar.gz", goodSha, 0, "asset:alpine/rootfs.bin"), Chroot.parseManifest(m, "aarch64"))
+        assertNull(Chroot.parseManifest(m.replace("asset=rootfs.bin", "asset=../x"), "aarch64")); assertNull(Chroot.parseManifest(m.replace("asset=rootfs.bin\n", ""), "aarch64"))
+        assertNull(Chroot.parseManifest(m, "armv7"))                                                                     // ABI lain: unduh
+        assertNull(Chroot.parseManifest(m.replace("sha256=$goodSha", "sha256=zz"), "aarch64"))
+        assertNull(Chroot.parseManifest(m.replace("file=alpine-minirootfs", "file=../alpine-minirootfs"), "aarch64"))
+        assertNull(Chroot.parseManifest("", "aarch64"))
+    }
+
+    @Test fun installFromBundleNeverTouchesNetworkButStillVerifiesHash() {
+        var net = 0; val root = FakeRoot()
+        val c = controller(root, sha = "0".repeat(64), onDownload = { net++ }, onFetch = { net++ }, bundle = { arch -> if (arch == "aarch64") bundleOf(goodSha) else null })
+        c.wait(c.refresh()); assertTrue(c.state.value.bundled)
+        c.wait(c.install())
+        assertEquals(0, net); assertTrue(c.state.value.installed)
+        assertTrue(c.state.value.log.any { it.contains("Rootfs dari bundel aplikasi") } && c.state.value.log.any { it.contains("Checksum cocok") })
+    }
+
+    @Test fun bundleHashMismatchFailsClosedWithoutDownloadFallback() {
+        var net = 0; val root = FakeRoot()
+        val c = controller(root, onDownload = { net++ }, onFetch = { net++ }, bundle = { bundleOf("1".repeat(64)) })
+        c.wait(c.install())
+        assertEquals(0, net); assertFalse(c.state.value.installed); assertFalse(root.scripts.any { it.contains("STAGE_HILANG") })
+        assertTrue(c.state.value.log.any { it.contains("tidak cocok dengan pin bundel") })
+    }
+
+    @Test fun bundleForOtherArchIsIgnoredAndDownloadIsUsed() {
+        var dl = 0; val root = FakeRoot()
+        val c = controller(root, onDownload = { dl++ }, bundle = { arch -> if (arch == "armv7") bundleOf(goodSha, "armv7") else null })   // ponsel arm64, bundel cuma armv7
+        c.wait(c.refresh()); assertFalse(c.state.value.bundled)
+        c.wait(c.install()); assertEquals(1, dl)
     }
 
     private fun LinuxController.wait(j: kotlinx.coroutines.Job?) { if (j != null) runBlocking { j.join() } }

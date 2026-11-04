@@ -51,16 +51,31 @@ object Chroot {
     data class Release(val file: String, val sha256: String, val size: Long, val url: String)
     fun releasesBase(arch: String) = "https://dl-cdn.alpinelinux.org/alpine/latest-stable/releases/$arch/"
 
+    private fun validRelease(file: String, sha: String, arch: String) =
+        Regex("alpine-minirootfs-[0-9][0-9.]*-${Regex.escape(arch)}\\.tar\\.gz").matches(file) && Regex("[0-9a-f]{64}").matches(sha)
+
     /** Cari minirootfs [arch] di latest-releases.yaml; hanya nama berkas dan checksum yang sahih diterima. */
     fun parseRelease(yaml: String, arch: String): Release? {
         for (block in yaml.split(Regex("(?m)^-\\s*$"))) {
             val f = block.lines().mapNotNull { l -> l.trim().takeIf { it.contains(':') }?.let { it.substringBefore(':').trim() to it.substringAfter(':').trim() } }.toMap()
             if (f["flavor"] != "alpine-minirootfs" || f["arch"] != arch) continue
             val file = f["file"] ?: continue; val sha = f["sha256"] ?: continue
-            if (!Regex("alpine-minirootfs-[0-9][0-9.]*-${Regex.escape(arch)}\\.tar\\.gz").matches(file) || !Regex("[0-9a-f]{64}").matches(sha)) continue
+            if (!validRelease(file, sha, arch)) continue
             return Release(file, sha, f["size"]?.toLongOrNull() ?: 0L, releasesBase(arch) + file)
         }
         return null
+    }
+
+    /** Rootfs yang dibundel di APK (aset `alpine/`, ditulis task Gradle `fetchAlpineRootfs` dari pin `android/alpine.properties`). [open] membuka arsipnya. */
+    data class Bundle(val release: Release, val open: () -> java.io.InputStream)
+
+    /** Baca `alpine/manifest.properties`; null bila arsitektur beda atau isinya tidak sahih (pemasangan lalu memakai jalur unduh). */
+    fun parseManifest(text: String, arch: String): Release? {
+        val kv = text.lines().mapNotNull { l -> l.trim().takeIf { it.contains('=') && !it.startsWith('#') }?.let { it.substringBefore('=').trim() to it.substringAfter('=').trim() } }.toMap()
+        if (kv["arch"] != arch) return null
+        val file = kv["file"] ?: return null; val sha = kv["sha256"] ?: return null; val asset = kv["asset"] ?: return null
+        if (!validRelease(file, sha, arch) || !Regex("[a-z0-9][a-z0-9._-]*").matches(asset)) return null
+        return Release(file, sha, 0L, "asset:alpine/$asset")                                  // nama aset bukan .gz: AAPT2 membongkar aset .gz
     }
 
     fun sha256(file: File): String = MessageDigest.getInstance("SHA-256").let { md ->
@@ -200,6 +215,8 @@ rm -rf ${'$'}R && echo OK
 
 data class LinuxState(
     val rootOk: Boolean? = null, val installed: Boolean = false, val mounted: Boolean = false, val version: String = "",
+    /** Rootfs untuk CPU ini ada di dalam APK (pemasangan tanpa unduhan). */
+    val bundled: Boolean = false,
     val busy: Boolean = false, val step: String = "", val progress: Float? = null, val log: List<String> = emptyList(),
 )
 
@@ -216,6 +233,8 @@ class LinuxController(
     private val extract: (File, File) -> List<Pair<String, Int>> = { src, dest -> TarGz.extract(src, dest) },
     /** Spool jembatan Moodle baca-saja untuk perintah AI; null bila belum login. Token tetap di aplikasi (lihat [MoodleBridge]). */
     private val bridge: () -> BridgeSpool? = { null },
+    /** Rootfs terbundel di APK untuk arsitektur Alpine yang diminta; null bila tidak ada (lalu diunduh). */
+    private val bundle: (arch: String) -> Chroot.Bundle? = { null },
 ) {
     private val _state = MutableStateFlow(LinuxState())
     val state: StateFlow<LinuxState> = _state
@@ -242,7 +261,8 @@ class LinuxController(
         val kv = r.out.lines().mapNotNull { l -> l.trim().takeIf { it.contains('=') }?.let { it.substringBefore('=') to it.substringAfter('=') } }.toMap()
         val root = kv["UID"] == "0"
         val inst = root && kv["INSTALLED"] == "1"
-        _state.update { it.copy(rootOk = root, installed = inst, mounted = inst && kv["MOUNTED"] == "1", version = kv["VER"].orEmpty()) }          // "mount aktif" hanya berarti bila Linux memang terpasang
+        val bundled = Chroot.abiToAlpine(abis())?.let { bundle(it) } != null
+        _state.update { it.copy(rootOk = root, installed = inst, mounted = inst && kv["MOUNTED"] == "1", version = kv["VER"].orEmpty(), bundled = bundled) }   // "mount aktif" hanya berarti bila Linux memang terpasang
         if (!root) log("Root tidak tersedia." + if (r.out.isNotBlank()) " (${r.out.trim().take(200)})" else "")
     }
 
@@ -256,15 +276,19 @@ class LinuxController(
         val clean = runner.run(Chroot.removeScript(), 120)
         if (clean.exit != 0) { log("Sisa pemasangan lama tidak bisa dibersihkan: ${clean.out.trim()}"); return@task }
         val arch = Chroot.abiToAlpine(abis()) ?: run { log("Arsitektur CPU tidak didukung: ${abis()}"); return@task }
-        step("Mengambil indeks rilis Alpine…")
-        val rel = Chroot.parseRelease(fetch(Chroot.releasesBase(arch) + "latest-releases.yaml"), arch) ?: run { log("Indeks rilis Alpine tidak dikenali; dibatalkan."); return@task }
-        log("Rilis: ${rel.file} (${rel.size / 1024} KB)")
+        // Rootfs dari bundel APK bila ada (tanpa jaringan); checksum tetap wajib cocok dengan pin build, tanpa fallback diam-diam ke unduhan.
+        val bundled = bundle(arch)
+        val rel = if (bundled != null) bundled.release.also { log("Rootfs dari bundel aplikasi: ${it.file}") } else {
+            step("Mengambil indeks rilis Alpine…")
+            Chroot.parseRelease(fetch(Chroot.releasesBase(arch) + "latest-releases.yaml"), arch)?.also { log("Rilis: ${it.file} (${it.size / 1024} KB)") }
+                ?: run { log("Indeks rilis Alpine tidak dikenali; dibatalkan."); return@task }
+        }
         val tar = File(cacheDir, "alpine-rootfs.tar.gz")
         try {
-            step("Mengunduh rootfs…", 0f)
-            download(rel.url, tar, 40L * 1024 * 1024) { b -> if (rel.size > 0) _state.update { it.copy(progress = (b.toFloat() / rel.size).coerceIn(0f, 1f)) } }
+            if (bundled != null) { step("Menyalin rootfs dari bundel…"); bundled.open().use { i -> tar.outputStream().use { o -> i.copyTo(o) } } }
+            else { step("Mengunduh rootfs…", 0f); download(rel.url, tar, 40L * 1024 * 1024) { b -> if (rel.size > 0) _state.update { it.copy(progress = (b.toFloat() / rel.size).coerceIn(0f, 1f)) } } }
             step("Memverifikasi checksum…")
-            if (Chroot.sha256(tar) != rel.sha256) { log("Checksum SHA-256 tidak cocok; berkas dibuang dan tidak dipasang."); return@task }
+            if (Chroot.sha256(tar) != rel.sha256) { log("Checksum SHA-256 tidak cocok${if (bundled != null) " dengan pin bundel" else ""}; berkas dibuang dan tidak dipasang."); return@task }
             log("Checksum cocok.")
             step("Mengekstrak arsip…")
             val stage = File(cacheDir, "alpine-stage"); val modesFile = File(cacheDir, "alpine-modes.txt")

@@ -95,5 +95,5 @@ class MoreShotTest {
         "Rilis: alpine-minirootfs-3.24.3-aarch64.tar.gz (3935 KB)", "Checksum cocok.", "Alpine terpasang.", "$ ls /mnt/lms", "12", "13", "$ python3 --version", "Python 3.14.8"))
     @Test fun linuxLight() = show("linux", ThemeMode.LIGHT) { LinuxContent(linuxState, LinuxActions()) }
     @Test fun linuxDark() = show("linux", ThemeMode.DARK) { LinuxContent(linuxState, LinuxActions()) }
-    @Test fun linuxFresh() = show("linux_fresh", ThemeMode.DARK) { LinuxContent(LinuxState(rootOk = null), LinuxActions()) }
+    @Test fun linuxFresh() = show("linux_fresh", ThemeMode.DARK) { LinuxContent(LinuxState(rootOk = true, bundled = true), LinuxActions()) }
 }

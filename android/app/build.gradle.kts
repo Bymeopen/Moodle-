@@ -1,3 +1,6 @@
+import java.io.IOException
+import java.net.URL
+import java.security.MessageDigest
 import java.util.Properties
 
 plugins {
@@ -18,8 +21,8 @@ android {
         applicationId = "id.pribadi.minilms"
         minSdk = 26
         targetSdk = 34
-        versionCode = 16
-        versionName = "2.16"
+        versionCode = 17
+        versionName = "2.17"
     }
     signingConfigs {
         if (keystoreProps.isNotEmpty()) create("release") {
@@ -43,6 +46,45 @@ android {
         }
     }
 }
+
+// ---- Rootfs Alpine dibundel ke APK (aset alpine/): diunduh saat build dari mirror resmi; SHA-256 harus cocok dengan pin di android/alpine.properties.
+// Bila unduhan gagal (offline), APK tetap dibangun tanpa bundel dan aplikasi mengunduh sendiri saat pemasangan. Hash yang tidak cocok = build gagal.
+// Disimpan sebagai rootfs.bin: AAPT2 membongkar otomatis aset berakhiran .gz (isi APK jadi .tar, hash tidak cocok).
+val alpineProps = Properties().apply { rootProject.file("alpine.properties").inputStream().use { load(it) } }
+val alpineAssets = layout.buildDirectory.dir("alpine/assets")
+val fetchAlpineRootfs by tasks.registering {
+    val file = alpineProps.getProperty("file"); val sha = alpineProps.getProperty("sha256"); val url = alpineProps.getProperty("url")
+    val outDir = alpineAssets.get().dir("alpine").asFile
+    inputs.properties("file" to file, "sha256" to sha)
+    outputs.dir(alpineAssets)
+    val asset = "rootfs.bin"
+    outputs.upToDateWhen { File(outDir, asset).exists() }
+    doLast {
+        fun hash(f: File) = MessageDigest.getInstance("SHA-256").let { md ->
+            f.inputStream().use { i -> val b = ByteArray(65536); while (true) { val n = i.read(b); if (n < 0) break; md.update(b, 0, n) } }
+            md.digest().joinToString("") { "%02x".format(it) }
+        }
+        outDir.mkdirs()
+        val dest = File(outDir, asset)
+        if (!dest.exists() || hash(dest) != sha) {
+            val tmp = File(outDir, "$asset.part")
+            try {
+                URL(url).openStream().use { i -> tmp.outputStream().use { o -> i.copyTo(o) } }
+            } catch (e: IOException) {
+                tmp.delete(); outDir.listFiles()?.forEach { it.delete() }
+                logger.warn("PERINGATAN: rootfs Alpine tidak bisa diunduh (${e.message}); APK dibangun TANPA bundel.")
+                return@doLast
+            }
+            val got = hash(tmp)
+            if (got != sha) { tmp.delete(); throw GradleException("SHA-256 rootfs Alpine ($got) tidak cocok dengan pin alpine.properties; build dihentikan.") }
+            if (!tmp.renameTo(dest)) throw GradleException("gagal menyimpan rootfs Alpine")
+        }
+        outDir.listFiles()?.filter { it.name != asset }?.forEach { it.delete() }
+        File(outDir, "manifest.properties").writeText("file=$file\nasset=$asset\nsha256=$sha\nversion=${alpineProps.getProperty("version")}\narch=${alpineProps.getProperty("arch")}\n")
+    }
+}
+android.sourceSets["main"].assets.srcDir(alpineAssets)
+tasks.named("preBuild") { dependsOn(fetchAlpineRootfs) }
 
 dependencies {
     implementation(platform("androidx.compose:compose-bom:2024.09.03"))

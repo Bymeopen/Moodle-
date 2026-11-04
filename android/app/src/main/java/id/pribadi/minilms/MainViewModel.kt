@@ -32,7 +32,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     val tick = repo.tick
     /** Lab Linux (chroot, ponsel root). Sengaja tidak terhubung ke Agen AI. */
     val linux = LinuxController(viewModelScope, app.cacheDir, java.io.File(app.filesDir, "courses"), java.io.File(app.filesDir, "library"),
-        bridge = { repo.site.value?.let { st -> BridgeSpool(java.io.File(app.filesDir, "bridge")) { req -> MoodleBridge.handle(req, st.userId) { fn, p -> MoodleApi.call(st.url, st.token, fn, p) } } } })
+        bridge = { repo.site.value?.let { st -> BridgeSpool(java.io.File(app.filesDir, "bridge")) { req -> MoodleBridge.handle(req, st.userId) { fn, p -> MoodleApi.call(st.url, st.token, fn, p) } } } },
+        bundle = { arch ->
+            runCatching { app.assets.open("alpine/manifest.properties").bufferedReader().use { it.readText() } }.getOrNull()
+                ?.let { Chroot.parseManifest(it, arch) }?.let { rel -> Chroot.Bundle(rel) { app.assets.open(rel.url.removePrefix("asset:")) } }
+        })
     val ai = AiController(app, repo, viewModelScope).also { ctl ->
         ctl.linuxBackend = object : LinuxBackend {
             override fun ready() = linux.state.value.let { it.installed && it.rootOk == true }
