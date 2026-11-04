@@ -22,15 +22,59 @@ import kotlin.concurrent.thread
  * - jawaban dibuang field rahasianya (token, kunci akses pribadi, kunci autologin) dan dibatasi ukurannya;
  * - tidak ada operasi tulis, kirim tugas, tes, atau forum.
  */
+/**
+ * Sisi lokal jembatan (diisi ViewModel): data offline (snapshot) dan aksi kendali yang SAMA dengan alat agen ([LmsActions]):
+ * sinkron, unduh, tanda selesai lokal, buka halaman, paket belajar. Bukan operasi tulis ke Moodle.
+ */
+interface BridgeLocal { fun snapshot(): Snapshot?; fun done(): Set<Long>; val actions: LmsActions }
+
 object MoodleBridge {
     const val MAX_REQUEST_BYTES = 2048
     const val MAX_OUT_CHARS = 60_000
     private const val MAX_ID = 1_000_000_000_000L
 
-    /** [args]: nama di permintaan -> nama parameter WS. [asList]: parameter WS yang dibungkus daftar. [userKey]: parameter WS berisi id pengguna sesi. */
-    private class Op(val fn: String, val args: Map<String, String> = emptyMap(), val asList: Set<String> = emptySet(), val userKey: String? = null, val fixed: Map<String, Any> = emptyMap(), val about: String)
+    /**
+     * Satu operasi. Jalur WS: [fn] + [args] (nama di permintaan -> nama parameter WS), [asList] parameter yang dibungkus daftar, [userKey] parameter id pengguna sesi.
+     * Jalur lokal: [local] dijalankan aplikasi dengan argumen yang sudah divalidasi (tanpa jaringan Moodle kecuali `sync`). [optional] = argumen yang boleh kosong.
+     */
+    private class Op(val fn: String? = null, val args: Map<String, String> = emptyMap(), val asList: Set<String> = emptySet(), val userKey: String? = null,
+                     val fixed: Map<String, Any> = emptyMap(), val optional: Set<String> = emptySet(), val about: String, val local: ((BridgeLocal, Map<String, Long>) -> Any)? = null)
+
+    private fun iso(sec: Long) = java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm").format(java.time.Instant.ofEpochSecond(sec).atZone(java.time.ZoneId.systemDefault()))
+    private fun course(l: BridgeLocal, id: Long) = l.snapshot()?.courses?.firstOrNull { it.id == id } ?: throw IllegalArgumentException("kursus tidak ditemukan; lihat `moodle offline`")
+    private fun item(l: BridgeLocal, courseId: Long, itemId: Long) = course(l, courseId).items.firstOrNull { it.id == itemId } ?: throw IllegalArgumentException("item tidak ditemukan; lihat `moodle items courseid=$courseId`")
+    private fun itemJson(i: Item, done: Set<Long>) = JSONObject().put("id", i.id).put("type", i.type).put("title", i.title).put("section", i.section).put("files", i.files.size).apply {
+        i.dueAt?.let { put("due", iso(it)) }; if (i.isTask) put("done", i.id in done)
+        if (i.type == "link" && i.content.startsWith("http")) put("link", i.content)
+    }
 
     private val OPS: Map<String, Op> = linkedMapOf(
+        // ---- lokal: data offline dari snapshot sinkron terakhir (tanpa jaringan) ----
+        "offline" to Op(about = "ringkasan data offline: kursus, jumlah item/tugas, waktu sinkron terakhir", local = { l, _ ->
+            val s = l.snapshot() ?: return@Op JSONObject().put("synced", false).put("hint", "belum ada data; jalankan `moodle sync`")
+            JSONObject().put("synced", true).put("synced_at", iso(s.syncedAt)).put("warnings", JSONArray(s.warnings.take(5)))
+                .put("courses", JSONArray(s.courses.map { c -> JSONObject().put("id", c.id).put("name", c.name).put("items", c.items.size).put("tasks", c.items.count { it.isTask })
+                    .put("grade_percent", Logic.gradeSummary(c).percent?.let { Math.round(it) } ?: JSONObject.NULL) }))
+        }),
+        "items" to Op(args = mapOf("courseid" to "courseid"), about = "daftar item satu kursus dari data offline (courseid)", local = { l, a ->
+            val c = course(l, a.getValue("courseid")); val d = l.done()
+            JSONObject().put("id", c.id).put("name", c.name).put("items", JSONArray(c.items.map { itemJson(it, d) }))
+        }),
+        "deadlines" to Op(args = mapOf("days" to "days"), optional = setOf("days"), about = "tugas/tes bertenggat dari data offline (days, default 14)", local = { l, a ->
+            val now = System.currentTimeMillis() / 1000; val days = (a["days"] ?: 14L).coerceIn(1, 120); val d = l.done()
+            JSONArray(l.snapshot()?.courses.orEmpty().flatMap { c -> c.items.filter { it.isTask && it.dueAt != null && it.dueAt!! in (now - 7 * 86400L)..(now + days * 86400L) }.map { c to it } }
+                .sortedBy { it.second.dueAt }.take(40).map { (c, i) -> itemJson(i, d).put("course_id", c.id).put("course", c.name).put("hours_left", (i.dueAt!! - now) / 3600) })
+        }),
+        // ---- lokal: kendali aplikasi, sama dengan alat agen (bukan operasi tulis Moodle) ----
+        "sync" to Op(about = "sinkronkan data dari Moodle sekarang (memakai jaringan aplikasi)", local = { l, _ -> l.actions.sync() }),
+        "download" to Op(args = mapOf("courseid" to "courseid"), about = "unduh semua file kursus untuk offline (courseid)", local = { l, a -> l.actions.downloadCourse(course(l, a.getValue("courseid")).id) }),
+        "done" to Op(args = mapOf("itemid" to "itemid"), about = "tandai tugas/tes selesai (penanda lokal, tidak mengirim ke Moodle) (itemid)", local = { l, a -> markLocal(l, a.getValue("itemid"), true) }),
+        "undone" to Op(args = mapOf("itemid" to "itemid"), about = "batalkan tanda selesai lokal (itemid)", local = { l, a -> markLocal(l, a.getValue("itemid"), false) }),
+        "open" to Op(args = mapOf("courseid" to "courseid", "itemid" to "itemid"), about = "buka halaman Moodle item di aplikasi untuk dikerjakan pengguna (courseid, itemid)", local = { l, a ->
+            val i = item(l, a.getValue("courseid"), a.getValue("itemid")); if (i.url.isEmpty()) "Item ini tidak punya halaman Moodle." else l.actions.openPage(i.url)
+        }),
+        "pack" to Op(args = mapOf("courseid" to "courseid"), about = "siapkan paket belajar kursus dan buka menu bagikan (courseid)", local = { l, a -> l.actions.exportPack(course(l, a.getValue("courseid")).id) }),
+        // ---- Web Service Moodle, baca-saja, dipanggil aplikasi dengan tokennya sendiri ----
         "site" to Op("core_webservice_get_site_info", about = "info situs dan pengguna"),
         "courses" to Op("core_enrol_get_users_courses", userKey = "userid", about = "kursus yang diikuti"),
         "contents" to Op("core_course_get_contents", mapOf("courseid" to "courseid"), about = "isi kursus (courseid)"),
@@ -43,11 +87,18 @@ object MoodleBridge {
         "calendar" to Op("core_calendar_get_calendar_upcoming_view", about = "acara kalender mendatang"),
     )
 
+    private fun markLocal(l: BridgeLocal, itemId: Long, done: Boolean): String {
+        val i = l.snapshot()?.courses.orEmpty().flatMap { it.items }.firstOrNull { it.id == itemId && it.isTask } ?: throw IllegalArgumentException("tugas/tes dengan id itu tidak ada")
+        l.actions.markDone(itemId, done); return "OK: \"${i.title}\" ditandai ${if (done) "selesai" else "belum selesai"} (lokal)"
+    }
+
     /** Nama operasi yang diizinkan (untuk bantuan dan tes). */
     val operations: List<String> get() = OPS.keys.toList()
+    /** Operasi lokal (tanpa fungsi WS). */
+    val localOperations: List<String> get() = OPS.filterValues { it.local != null }.keys.toList()
     /** Fungsi WS yang bisa tercapai lewat jembatan (untuk pagar tes: semuanya harus fungsi baca `*_get_*`). */
-    val functions: List<String> get() = OPS.values.map { it.fn }
-    fun help(): String = OPS.entries.joinToString("\n") { (k, o) -> "moodle $k${o.args.keys.joinToString("") { " $it=ANGKA" }}  # ${o.about}" }
+    val functions: List<String> get() = OPS.values.mapNotNull { it.fn }
+    fun help(): String = OPS.entries.joinToString("\n") { (k, o) -> "moodle $k${o.args.keys.joinToString("") { if (it in o.optional) " [$it=ANGKA]" else " $it=ANGKA" }}  # ${o.about}" }
 
     /** Nama field yang tidak boleh keluar ke sandbox, di tingkat mana pun. */
     private fun secret(key: String): Boolean {
@@ -67,26 +118,34 @@ object MoodleBridge {
      * Proses satu permintaan JSON dan kembalikan jawaban JSON (`ok`, `data` | `error`). Tidak pernah melempar.
      * [call] memanggil fungsi WS dengan token milik aplikasi (token tidak pernah masuk ke sini); [userId] = pengguna sesi.
      */
-    fun handle(request: String, userId: Long, call: (fn: String, params: Map<String, Any>) -> Any): String {
+    /** Nama operasi dari permintaan mentah (untuk jejak); "?" bila tidak terbaca. */
+    fun opOf(request: String): String = try { JSONObject(request).optString("op").takeIf { it.isNotEmpty() && it.length <= 20 && Regex("[a-z_]+").matches(it) } ?: "?" } catch (e: Exception) { "?" }
+
+    fun handle(request: String, userId: Long, call: (fn: String, params: Map<String, Any>) -> Any, local: BridgeLocal? = null): String {
         if (request.length > MAX_REQUEST_BYTES) return err("permintaan terlalu besar")
         val req = try { JSONObject(request) } catch (e: Exception) { return err("permintaan bukan JSON yang sah") }
         val name = req.optString("op")
         val op = OPS[name] ?: return err("operasi tidak dikenal; yang ada: ${OPS.keys.joinToString(", ")}")
         val unknown = req.keys().asSequence().filter { it != "op" && it !in op.args }.toList()
         if (unknown.isNotEmpty()) return err("argumen tidak dikenal: ${unknown.joinToString(",") { it.take(20) }}")
-        val params = linkedMapOf<String, Any>()
+        val params = linkedMapOf<String, Any>(); val nums = linkedMapOf<String, Long>()
         for ((reqKey, wsKey) in op.args) {
             val raw = req.opt(reqKey)
+            if (raw == null && reqKey in op.optional) continue
             val n = (raw as? Number)?.toLong()?.takeIf { (raw is Int || raw is Long) && it in 1..MAX_ID } ?: return err("argumen $reqKey wajib berupa bilangan bulat positif")
-            params[wsKey] = if (wsKey in op.asList) listOf(n) else n
+            nums[reqKey] = n; params[wsKey] = if (wsKey in op.asList) listOf(n) else n
         }
         op.userKey?.let { params[it] = userId }
         params.putAll(op.fixed)
         return try {
-            val data = sanitize(call(op.fn, params))
+            val data = if (op.local != null) {
+                val l = local ?: return err("operasi lokal tidak tersedia di sini")
+                sanitize(op.local.invoke(l, nums))
+            } else sanitize(call(op.fn!!, params))
             val text = JSONObject().put("ok", true).put("data", data).toString()
             if (text.length <= MAX_OUT_CHARS) text else JSONObject().put("ok", true).put("truncated", true).put("data", (data?.toString() ?: "").take(MAX_OUT_CHARS - 200)).toString()
         } catch (e: ApiError) { err("Moodle: ${e.message ?: "galat"}") }
+        catch (e: IllegalArgumentException) { err(e.message ?: "argumen tidak valid") }
         catch (e: Exception) { err("gagal memanggil Moodle: ${e.javaClass.simpleName}") }
     }
 
@@ -127,12 +186,14 @@ rm -f "¤B/req-¤ID.json"; echo "waktu habis menunggu aplikasi"; exit 3
  */
 class BridgeSpool(val dir: File, private val maxRequests: Int = 40, private val pollMs: Long = 100, private val handler: (String) -> String) {
     companion object { val REQ = Regex("req-([0-9a-f]{8,32})\\.json") }
+    /** Nama operasi yang sudah dilayani sejak [prepare] (jejak untuk log Lab Linux dan footer keluaran). */
+    val served = java.util.concurrent.CopyOnWriteArrayList<String>()
 
     /** Siapkan folder (dibuat oleh aplikasi; bisa ditulis pengguna `ai` yang uid-nya lain). */
     fun prepare() {
         dir.mkdirs()
         dir.setReadable(true, false); dir.setWritable(true, false); dir.setExecutable(true, false)
-        clean()
+        served.clear(); clean()
     }
 
     fun clean() { dir.listFiles()?.forEach { f -> runCatching { Files.deleteIfExists(f.toPath()) } } }
@@ -162,7 +223,9 @@ class BridgeSpool(val dir: File, private val maxRequests: Int = 40, private val 
             if (n >= budget) break
             val m = REQ.matchEntire(f.name) ?: continue
             val id = m.groupValues[1]
-            val reply = try { handler(readSmall(f) ?: continue) } catch (e: Exception) { JSONObject().put("ok", false).put("error", "galat internal").toString() }
+            val req = readSmall(f) ?: continue
+            served += MoodleBridge.opOf(req)
+            val reply = try { handler(req) } catch (e: Exception) { JSONObject().put("ok", false).put("error", "galat internal").toString() }
             runCatching { Files.deleteIfExists(f.toPath()) }
             writeReply(id, reply); n++
         }

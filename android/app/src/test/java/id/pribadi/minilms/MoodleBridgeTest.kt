@@ -15,7 +15,7 @@ class MoodleBridgeTest {
         assertTrue(MoodleBridge.functions.all { Regex("(core|mod|gradereport)_[a-z_]*_get_[a-z_]+").matches(it) })      // semua fungsi baca
         assertTrue(MoodleBridge.functions.none { Regex("(^|_)(submit|save|add|create|delete|update|start|finish|process|post)(_|\$)").containsMatchIn(it) })
         assertTrue(MoodleBridge.functions.none { it.contains("attempt") })                                               // tidak menyentuh pengerjaan tes
-        assertEquals(listOf("site", "courses", "contents", "assignments", "quizzes", "grades", "forums", "discussions", "posts", "calendar"), MoodleBridge.operations)
+        assertEquals(listOf("site", "courses", "contents", "assignments", "quizzes", "grades", "forums", "discussions", "posts", "calendar"), MoodleBridge.operations - MoodleBridge.localOperations.toSet())
     }
 
     @Test fun rejectsUnknownOpUnknownArgsAndNonIntegers() {
@@ -45,11 +45,11 @@ class MoodleBridgeTest {
     }
 
     @Test fun errorsAndHugeOutputAreContained() {
-        val boom = MoodleBridge.handle("""{"op":"site"}""", 1) { _, _ -> throw ApiError("token wstoken=ABC salah") }
+        val boom = MoodleBridge.handle("""{"op":"site"}""", 1, call = { _, _ -> throw ApiError("token wstoken=ABC salah") })
         assertFalse(JSONObject(boom).getBoolean("ok"))
-        val crash = MoodleBridge.handle("""{"op":"site"}""", 1) { _, _ -> throw IllegalStateException("x") }
+        val crash = MoodleBridge.handle("""{"op":"site"}""", 1, call = { _, _ -> throw IllegalStateException("x") })
         assertFalse(JSONObject(crash).getBoolean("ok"))
-        val big = JSONObject(MoodleBridge.handle("""{"op":"site"}""", 1) { _, _ -> JSONObject().put("t", "x".repeat(200_000)) })
+        val big = JSONObject(MoodleBridge.handle("""{"op":"site"}""", 1, call = { _, _ -> JSONObject().put("t", "x".repeat(200_000)) }))
         assertTrue(big.getBoolean("truncated")); assertTrue(big.toString().length <= MoodleBridge.MAX_OUT_CHARS + 100)
     }
 
@@ -83,7 +83,7 @@ class MoodleBridgeTest {
     }
 
     @Test fun oversizeRequestAndBudgetAreEnforced() {
-        val seen = mutableListOf<String>(); val s = BridgeSpool(Files.createTempDirectory("spool").toFile(), handler = { seen += it; MoodleBridge.handle(it, 1) { _, _ -> "x" } }); s.prepare()
+        val seen = mutableListOf<String>(); val s = BridgeSpool(Files.createTempDirectory("spool").toFile(), handler = { seen += it; MoodleBridge.handle(it, 1, call = { _, _ -> "x" }) }); s.prepare()
         File(s.dir, "req-cccccccccccccccc.json").writeText("""{"op":"site","pad":"${"a".repeat(5000)}"}""")
         assertEquals(1, s.pumpOnce()); assertTrue(File(s.dir, "res-cccccccccccccccc.json").readText().contains("terlalu besar"))
         for (i in 0 until 5) File(s.dir, "req-d${i}ddddddddddddddd.json").writeText("""{"op":"site"}""")

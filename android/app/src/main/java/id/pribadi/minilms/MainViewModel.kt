@@ -31,13 +31,20 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     val snapshot = repo.snapshot
     val tick = repo.tick
     /** Lab Linux (chroot, ponsel root). Sengaja tidak terhubung ke Agen AI. */
-    val linux = LinuxController(viewModelScope, app.cacheDir, java.io.File(app.filesDir, "courses"), java.io.File(app.filesDir, "library"),
-        bridge = { repo.site.value?.let { st -> BridgeSpool(java.io.File(app.filesDir, "bridge")) { req -> MoodleBridge.handle(req, st.userId) { fn, p -> MoodleApi.call(st.url, st.token, fn, p) } } } },
+    val linux: LinuxController = LinuxController(viewModelScope, app.cacheDir, java.io.File(app.filesDir, "courses"), java.io.File(app.filesDir, "library"),
+        bridge = { repo.site.value?.let { st -> BridgeSpool(java.io.File(app.filesDir, "bridge")) { req ->
+            MoodleBridge.handle(req, st.userId, { fn, p -> MoodleApi.call(st.url, st.token, fn, p) }, bridgeLocal) } } },
         bundle = { arch ->
             runCatching { app.assets.open("alpine/manifest.properties").bufferedReader().use { it.readText() } }.getOrNull()
                 ?.let { Chroot.parseManifest(it, arch) }?.let { rel -> Chroot.Bundle(rel) { app.assets.open(rel.url.removePrefix("asset:")) } }
         })
-    val ai = AiController(app, repo, viewModelScope).also { ctl ->
+    /** Sisi lokal jembatan `moodle` di sandbox: data offline + aksi kendali yang sama dengan alat agen (diisi setelah `ai.lms`). */
+    private val bridgeLocal = object : BridgeLocal {
+        override fun snapshot() = repo.snapshot.value
+        override fun done() = repo.doneAssignments.value
+        override val actions: LmsActions get() = ai.lms ?: throw IllegalStateException("aksi belum siap")
+    }
+    val ai: AiController = AiController(app, repo, viewModelScope).also { ctl ->
         ctl.linuxBackend = object : LinuxBackend {
             override fun ready() = linux.state.value.let { it.installed && it.rootOk == true }
             override fun exec(cmd: String) = linux.runForAi(cmd)

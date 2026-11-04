@@ -352,7 +352,10 @@ class LinuxController(
                     else spool.serve { runner.run(Chroot.aiExecScript(c, bridgeDir = spool.dir.absolutePath), 75) }
             val out = r.out.trim()
             log(out.take(2000).ifEmpty { "(tanpa keluaran)" })
-            return (out.take(6000).ifEmpty { "(tanpa keluaran)" }) + if (r.exit != 0) "\n(kode keluar ${r.exit})" else ""
+            // jejak jembatan: setiap operasi Moodle yang dilayani selama perintah ini terlihat di terminal dan di balasan ke model
+            val served = spool?.served?.toList().orEmpty()
+            val trace = if (served.isEmpty()) "" else "\n[jembatan Moodle: ${served.joinToString(", ")}]".also { log("[jembatan Moodle] " + served.joinToString(", ")) }
+            return (out.take(6000).ifEmpty { "(tanpa keluaran)" }) + (if (r.exit != 0) "\n(kode keluar ${r.exit})" else "") + trace
         } finally { _state.update { it.copy(busy = false, step = "") } }
     }
 

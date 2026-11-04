@@ -106,7 +106,7 @@ class LmsTools(
             obj("course_id" to int, "cards" to """{"type":"array","items":{"type":"object","properties":{"front":$str,"back":$str},"required":["front","back"]}}""", required = listOf("course_id", "cards"))),
     )
 
-    private val linuxSpec = ToolSpec("linux_exec", "Jalankan perintah shell di Linux (Alpine) sebagai pengguna terbatas 'ai' (bukan root, tanpa jaringan, tanpa akses penyimpanan ponsel). Folder kerja /home/ai/work (boleh ditulis); salinan materi kursus hanya-baca di /home/ai/lms/<id kursus>. Ada python3 dan pdftotext bila sudah dipasang. Perintah `moodle <op> [nama=angka]` (mis. `moodle courses`, `moodle contents courseid=5`, `moodle help`) membaca data Moodle lewat jembatan baca-saja milik aplikasi (tidak ada tulis/kirim). Maks 50 detik; pengguna dapat menolak perintah.",
+    private val linuxSpec = ToolSpec("linux_exec", "Jalankan perintah shell di Linux (Alpine) sebagai pengguna terbatas 'ai' (bukan root, tanpa jaringan, tanpa akses penyimpanan ponsel). Folder kerja /home/ai/work (boleh ditulis); salinan materi kursus hanya-baca di /home/ai/lms/<id kursus>. Ada python3 dan pdftotext bila sudah dipasang. Perintah `moodle <op> [nama=angka]` (`moodle help` untuk daftar): data offline (`offline`, `items courseid=`, `deadlines`), kendali aplikasi (`sync`, `download courseid=`, `done/undone itemid=`, `open`, `pack`), dan Web Service Moodle baca-saja (`courses`, `contents courseid=`, `grades`, forum). Tidak ada kirim tugas/tes/posting. Maks 50 detik; pengguna dapat menolak perintah.",
         obj("command" to str, required = listOf("command")))
 
     /** Daftar alat; `linux_exec` hanya muncul bila akses Linux untuk AI aktif dan Linux terpasang. */
