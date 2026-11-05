@@ -1,1 +1,10 @@
-<resources><color name="ic_background">#F98012</color></resources>
+<resources>
+    <color name="ic_background">#F98012</color>
+    <color name="widget_bg">#FFFFFFFF</color>
+    <color name="widget_text">#FF1B1B1F</color>
+    <color name="widget_sub">#FF5F6368</color>
+    <color name="widget_urgent">#FFC62828</color>
+    <color name="widget_button">#FFE8590C</color>
+    <color name="widget_button_text">#FFFFFFFF</color>
+    <color name="widget_button_alt">#FFEDEDF0</color>
+</resources>

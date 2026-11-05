@@ -81,4 +81,4 @@ gradle assembleRelease     # app/build/outputs/apk/release/app-release.apk
 ```
 `keystore.properties`, `*.jks`, dan `*.keystore` sudah di-gitignore; jangan pernah di-commit atau dibagikan. Tanpa `keystore.properties`, build rilis tidak ditandatangani.
 
-APK debug memakai kunci debug lokal; membangun ulang di mesin lain memakai kunci berbeda sehingga pembaruan harus uninstall dulu. Belum ada: pesan/forum, kuis Moodle, pengumpulan tugas. Panduan untuk agen AI (Claude Code/Antigravity): `AGENTS.md`.
+APK debug memakai kunci debug lokal; membangun ulang di mesin lain memakai kunci berbeda sehingga pembaruan harus uninstall dulu. Belum ada: pesan/forum, kuis Moodle, pengumpulan tugas. Sejak v2.17: **Rencana belajar** (jadwal mingguan otomatis dari tenggat + pengingat harian opsional), **Pencarian** di semua materi (offline), **Catatan & sorotan** per materi/tugas (bisa jadi kartu hafalan atau dibagikan, ikut Paket belajar), dan **widget layar utama** (tenggat terdekat + tombol Mulai belajar). Panduan untuk agen AI (Claude Code/Antigravity): `AGENTS.md`.

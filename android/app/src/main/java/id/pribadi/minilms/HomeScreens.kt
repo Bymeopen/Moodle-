@@ -41,6 +41,7 @@ fun HomeScreen(
     doneIds: Set<Long>, dueCards: Int, hasKey: Boolean, nowSec: Long, hour: Int,
     onSync: () -> Unit, onOpenCourse: (Long) -> Unit, onDeadlines: () -> Unit, onCourses: () -> Unit, onGrades: () -> Unit,
     onDownloadAll: () -> Unit, onPause: () -> Unit, onReview: () -> Unit, onAskAi: () -> Unit, onLibrary: () -> Unit = {},
+    onSearch: () -> Unit = {}, onPlan: () -> Unit = {}, onNotes: () -> Unit = {},
 ) {
     val courses = snapshot?.courses.orEmpty()
     val upcoming = remember(snapshot, doneIds, nowSec) { deadlinesOf(snapshot).filter { it.item.id !in doneIds && it.item.dueAt!! >= nowSec } }
@@ -55,6 +56,7 @@ fun HomeScreen(
                     Text(first.ifEmpty { "Mahasiswa" }, style = MaterialTheme.typography.headlineMedium)
                     Text(if (snapshot == null) "Belum sinkron" else "Sinkron " + Logic.ago(snapshot.syncedAt, nowSec), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
+                IconButton(onSearch) { Icon(Icons.Rounded.Search, "Cari di semua materi") }
                 FilledTonalIconButton(onSync, enabled = !busy) {
                     if (busy) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp) else Icon(Icons.Rounded.Refresh, "Sinkron sekarang")
                 }
@@ -75,6 +77,12 @@ fun HomeScreen(
                     StatTile(Icons.Rounded.School, "${courses.size}", "Kursus", MaterialTheme.colorScheme.primary, Modifier.weight(1f), onCourses)
                     StatTile(Icons.Rounded.EventAvailable, "${upcoming.size}", "Tenggat", MaterialTheme.colorScheme.tertiary, Modifier.weight(1f), onDeadlines)
                     StatTile(Icons.Rounded.Style, "$dueCards", "Kartu hari ini", MaterialTheme.colorScheme.secondary, Modifier.weight(1f), if (dueCards > 0) onReview else null)
+                }
+            }
+            item {
+                Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    QuickCard(Icons.Rounded.EventNote, "Rencana belajar", "Jadwal dari tenggat", MaterialTheme.colorScheme.primary, Modifier.weight(1f), onPlan)
+                    QuickCard(Icons.Rounded.EditNote, "Catatan saya", "Sorotan & catatan", MaterialTheme.colorScheme.tertiary, Modifier.weight(1f), onNotes)
                 }
             }
             item {
@@ -390,3 +398,15 @@ fun GradesScreen(courses: List<Course>) {
         }
     }
 }
+
+@Composable
+private fun QuickCard(icon: androidx.compose.ui.graphics.vector.ImageVector, title: String, sub: String, tint: androidx.compose.ui.graphics.Color, modifier: Modifier, onClick: () -> Unit) =
+    Card2(modifier, onClick) {
+        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            IconBadge(icon, tint, size = 36.dp)
+            Column {
+                Text(title, style = MaterialTheme.typography.titleSmall, maxLines = 1)
+                Text(sub, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
+            }
+        }
+    }

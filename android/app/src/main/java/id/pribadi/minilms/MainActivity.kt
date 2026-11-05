@@ -47,6 +47,7 @@ class MainActivity : ComponentActivity() {
 
     /** Callback SSO Moodle: moodlemobile://token=... */
     private fun route(i: Intent) {
+        i.getStringExtra(OpenTarget.EXTRA)?.let { vm.requestOpen(it); i.removeExtra(OpenTarget.EXTRA) }      // dari widget/notifikasi
         val d = i.data ?: return
         if (d.scheme == Sso.SCHEME) { i.data = null; vm.handleCallback(d) }
     }
@@ -86,7 +87,7 @@ private val dests = listOf(
 @Composable
 fun MainScreen(vm: MainViewModel) {
     var tab by rememberSaveable { mutableIntStateOf(0) }
-    var overlay by rememberSaveable { mutableStateOf("") }            // "", "course:ID", "grades", "review", "library", "linux"
+    var overlay by rememberSaveable { mutableStateOf("") }            // "", "course:ID", "grades", "review", "library", "linux", "search", "plan", "notes"
     var query by rememberSaveable { mutableStateOf("") }
     var filter by rememberSaveable { mutableStateOf(CourseFilter.ALL) }
     var showDone by rememberSaveable { mutableStateOf(false) }
@@ -105,6 +106,7 @@ fun MainScreen(vm: MainViewModel) {
     val done by vm.doneAssignments.collectAsStateWithLifecycle()
     val cards by vm.cards.collectAsStateWithLifecycle()
     val hasKey by vm.ai.hasKey.collectAsStateWithLifecycle()
+    val openTarget by vm.openTarget.collectAsStateWithLifecycle()
 
     val courses = snap?.courses.orEmpty()
     val stats by vm.stats.collectAsStateWithLifecycle()
@@ -117,6 +119,18 @@ fun MainScreen(vm: MainViewModel) {
     val perm = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { }
     LaunchedEffect(Unit) { if (Build.VERSION.SDK_INT >= 33 && !Notif.canPost(vm.getApplication()) && !vm.repo.askedNotif) { vm.repo.askedNotif = true; perm.launch(Manifest.permission.POST_NOTIFICATIONS) } }
 
+    // dari widget/notifikasi: buka layar tujuan lalu buang permintaannya
+    LaunchedEffect(openTarget) {
+        when (openTarget) {
+            OpenTarget.REVIEW -> { overlay = "review" }
+            OpenTarget.DEADLINES -> { overlay = ""; tab = 2 }
+            OpenTarget.PLAN -> { overlay = "plan" }
+            OpenTarget.SEARCH -> { overlay = "search" }
+            OpenTarget.NOTES -> { overlay = "notes" }
+            else -> return@LaunchedEffect
+        }
+        vm.consumeOpen()
+    }
     playing?.let { VideoPlayerDialog(it, vm::stopPlaying) }
     viewing?.let { DocViewerDialog(it, vm::closeViewer, vm::openViewingExternal) }
     if (needReauth) AlertDialog(vm::dismissReauth, title = { Text("Aktifkan login otomatis") },
@@ -135,18 +149,22 @@ fun MainScreen(vm: MainViewModel) {
                 overlay == "review" -> ReviewScreen(vm) { overlay = "" }
                 overlay == "library" -> LibraryScreen(vm) { overlay = "" }
                 overlay == "linux" -> LinuxScreen(vm) { overlay = "" }
+                overlay == "search" -> SearchScreen(vm, openCourse) { overlay = "" }
+                overlay == "plan" -> PlannerScreen(vm, onReview = { overlay = "review" }, onDeadlines = { overlay = ""; tab = 2 }) { overlay = "" }
+                overlay == "notes" -> NotesScreen(vm, openCourse) { overlay = "" }
                 overlay == "grades" -> Column { BackBar("Nilai") { overlay = "" }; GradesScreen(courses) }
                 course != null -> CourseDetailScreen(vm, course, stats[course.id] ?: Repo.CourseStats(0, 0, 0, 0), onBack = { overlay = "" }, onAskAi = { askAi(course.id, it) })
                 else -> when (tab) {
                     0 -> PullToRefreshBox(busy, { vm.sync() }) {
                         HomeScreen(site?.fullName.orEmpty(), snap, stats, dl, online, busy, syncError, done, dueCards, hasKey, nowSec, Calendar.getInstance().get(Calendar.HOUR_OF_DAY),
                             onSync = { vm.sync() }, onOpenCourse = openCourse, onDeadlines = { tab = 2 }, onCourses = { tab = 1 }, onGrades = { overlay = "grades" },
-                            onDownloadAll = vm::downloadAll, onPause = vm::pause, onReview = { overlay = "review" }, onAskAi = { askAi(null, AiMode.CHAT) }, onLibrary = { overlay = "library" })
+                            onDownloadAll = vm::downloadAll, onPause = vm::pause, onReview = { overlay = "review" }, onAskAi = { askAi(null, AiMode.CHAT) }, onLibrary = { overlay = "library" },
+                            onSearch = { overlay = "search" }, onPlan = { overlay = "plan" }, onNotes = { overlay = "notes" })
                     }
                     1 -> PullToRefreshBox(busy, { vm.sync() }) { CoursesScreen(snap, stats, busy, query, filter, { query = it }, { filter = it }, openCourse) }
                     2 -> DeadlinesScreen(rows, done, nowSec, showDone, { showDone = it }, vm::toggleDone, openCourse)
                     3 -> AiScreen(vm, onReview = { overlay = "review" })
-                    else -> ProfileScreen(vm, onGrades = { overlay = "grades" }, onReview = { overlay = "review" }, onLibrary = { overlay = "library" }, onLinux = { overlay = "linux" })
+                    else -> ProfileScreen(vm, onGrades = { overlay = "grades" }, onReview = { overlay = "review" }, onLibrary = { overlay = "library" }, onLinux = { overlay = "linux" }, onNotes = { overlay = "notes" }, onPlan = { overlay = "plan" }, onSearch = { overlay = "search" })
                 }
             }
         }

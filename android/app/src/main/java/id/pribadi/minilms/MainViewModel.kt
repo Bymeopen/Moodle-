@@ -89,6 +89,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     init {
         runCatching { cm?.registerDefaultNetworkCallback(netCb) }
         if (repo.site.value != null) Jobs.scheduleReminders(getApplication(), repo.reminders)      // idempoten (KEEP); jangan bergantung pada sinkron pertama
+        if (repo.site.value != null && repo.planReminder) Jobs.schedulePlan(getApplication(), true, repo.planHour)
         // sinkron otomatis saat dibuka bila data sudah > 30 menit dan ada koneksi
         viewModelScope.launch {
             delay(400)
@@ -199,7 +200,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    fun logout() { android.webkit.CookieManager.getInstance().removeAllCookies(null); android.webkit.WebStorage.getInstance().deleteAllData(); autologinAt = 0; _web.value = null; _viewing.value = null; _playing.value = null; Jobs.pause(getApplication()); Jobs.scheduleReminders(getApplication(), false); repo.logout() }
+    fun logout() { android.webkit.CookieManager.getInstance().removeAllCookies(null); android.webkit.WebStorage.getInstance().deleteAllData(); autologinAt = 0; _web.value = null; _viewing.value = null; _playing.value = null; Jobs.pause(getApplication()); Jobs.scheduleReminders(getApplication(), false); Jobs.schedulePlan(getApplication(), false, 0); textCache.clear(); _search.value = SearchState(); _planCfg.value = PlanCfg(); repo.logout() }
     fun setReminders(on: Boolean) { repo.reminders = on; Jobs.scheduleReminders(getApplication(), on) }
     fun setWifiOnly(on: Boolean) { repo.wifiOnly = on }
     fun setTheme(m: ThemeMode) = repo.setTheme(m)
@@ -245,13 +246,87 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         } catch (e: ActivityNotFoundException) { _message.value = "Tidak ada aplikasi untuk membuka file ini" }
     }
 
+    // ---------- catatan & sorotan ----------
+    val notes = repo.notes
+
+    fun addNote(courseId: Long, itemId: Long, quote: String, text: String) {
+        val n = Notes.make(java.util.UUID.randomUUID().toString(), courseId, itemId, quote, text, System.currentTimeMillis() / 1000)
+            ?: run { _message.value = "Catatan kosong"; return }
+        viewModelScope.launch(Dispatchers.IO) { try { repo.addNote(n) } catch (e: java.io.IOException) { _message.value = "Gagal menyimpan catatan: ${e.message}" } }
+    }
+    fun editNote(n: Note, quote: String, text: String) {
+        val m = Notes.make(n.id, n.courseId, n.itemId, quote, text, n.createdAt) ?: run { _message.value = "Catatan kosong"; return }
+        viewModelScope.launch(Dispatchers.IO) { try { repo.updateNote(m) } catch (e: java.io.IOException) { _message.value = "Gagal menyimpan catatan: ${e.message}" } }
+    }
+    fun deleteNote(id: String) { viewModelScope.launch(Dispatchers.IO) { try { repo.deleteNote(id) } catch (e: java.io.IOException) { _message.value = "Gagal menghapus catatan: ${e.message}" } } }
+
+    /** Catatan jadi kartu hafalan (depan = kutipan/judul, belakang = catatan). */
+    fun noteToCard(n: Note) {
+        val title = repo.snapshot.value?.courses?.firstOrNull { it.id == n.courseId }?.items?.firstOrNull { it.id == n.itemId }?.title.orEmpty()
+        val d = Notes.toDraft(n, title) ?: run { _message.value = "Catatan ini belum punya dua sisi (kutipan + catatan)"; return }
+        viewModelScope.launch(Dispatchers.IO) {
+            try { repo.addCards(listOf(Card(java.util.UUID.randomUUID().toString(), n.courseId, d.front, d.back, 2.5, 0, 0, java.time.LocalDate.now().toString()))); _message.value = "Kartu dibuat dari catatan" }
+            catch (e: java.io.IOException) { _message.value = "Gagal menyimpan kartu: ${e.message}" }
+        }
+    }
+
+    /** Bagikan semua catatan satu kursus sebagai teks Markdown. */
+    fun shareNotes(c: Course) {
+        val md = Notes.markdown(c, repo.notes.value)
+        if (md.isEmpty()) { _message.value = "Belum ada catatan di kursus ini"; return }
+        val send = Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_SUBJECT, "Catatan ${c.name}").putExtra(Intent.EXTRA_TEXT, md)
+        try { getApplication<Application>().startActivity(Intent.createChooser(send, "Bagikan catatan").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) } catch (e: ActivityNotFoundException) { _message.value = "Tidak ada aplikasi untuk membagikan teks" }
+    }
+
+    // ---------- pencarian di semua materi ----------
+    data class SearchState(val query: String = "", val hits: List<SearchHit> = emptyList(), val searching: Boolean = false)
+    private val _search = MutableStateFlow(SearchState())
+    val search: StateFlow<SearchState> = _search
+    private var searchJob: kotlinx.coroutines.Job? = null
+    private val textCache = java.util.concurrent.ConcurrentHashMap<String, String>()      // teks file terunduh, kunci = path + waktu ubah (ekstraksi docx/pptx mahal)
+
+    private fun cachedFileText(c: Course, i: Item, f: FileRef): String? {
+        if (!repo.isDownloaded(c.id, i.id, f)) return null
+        val file = repo.fileOf(c.id, i.id, f)
+        val key = file.path + ":" + file.lastModified()
+        return textCache.getOrPut(key) { repo.textOf(c.id, i.id, f).orEmpty() }.ifEmpty { null }
+    }
+
+    fun searchFor(q: String) {
+        searchJob?.cancel()
+        _search.update { it.copy(query = q, searching = q.trim().length >= Search.MIN_QUERY) }
+        if (q.trim().length < Search.MIN_QUERY) { _search.update { it.copy(hits = emptyList(), searching = false) }; return }
+        searchJob = viewModelScope.launch {
+            delay(250)                                                    // tunggu pengguna selesai mengetik
+            val courses = repo.snapshot.value?.courses.orEmpty()
+            val hits = try { withContext(Dispatchers.IO) { Search.search(courses, repo.notes.value, repo.cards.value, q, fileText = ::cachedFileText) } }
+                catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Exception) { emptyList() }
+            _search.update { if (it.query == q) it.copy(hits = hits, searching = false) else it }
+        }
+    }
+
+    // ---------- rencana belajar ----------
+    data class PlanCfg(val reminder: Boolean = false, val minutes: Int = Planner.DEFAULT_DAILY, val hour: Int = Planner.DEFAULT_HOUR)
+    private val _planCfg = MutableStateFlow(PlanCfg(repo.planReminder, repo.planMinutes, repo.planHour))
+    val planCfg: StateFlow<PlanCfg> = _planCfg
+    fun setPlanMinutes(m: Int) { repo.planMinutes = m; _planCfg.update { it.copy(minutes = repo.planMinutes) } }
+    fun setPlanHour(h: Int) { repo.planHour = h; _planCfg.update { it.copy(hour = repo.planHour) }; if (repo.planReminder) Jobs.schedulePlan(getApplication(), true, repo.planHour) }
+    fun setPlanReminder(on: Boolean) { repo.planReminder = on; _planCfg.update { it.copy(reminder = on) }; Jobs.schedulePlan(getApplication(), on, repo.planHour) }
+
+    // ---------- buka layar dari widget/notifikasi ----------
+    private val _open = MutableStateFlow<String?>(null)
+    val openTarget: StateFlow<String?> = _open
+    fun requestOpen(t: String?) { if (t in OpenTarget.all) _open.value = t }
+    fun consumeOpen() { _open.value = null }
+
     // ---------- paket belajar (untuk diolah di NotebookLM/Gemini/Claude: podcast, audio, bahan ajar) ----------
     data class PackSummary(val texts: Int, val chars: Int, val pdfs: Int, val links: Int, val otherFiles: Int, val notDownloaded: Int, val sources: Int, val omitted: Int)
 
     private class PackFiles(val dir: java.io.File, val texts: List<PackText>, val links: PackText?, val pdfs: List<java.io.File>, val otherFiles: Int, val notDownloaded: Int)
 
     private fun packFiles(c: Course): PackFiles {
-        val texts = StudyPack.texts(c, fileText = { i, f -> repo.textOf(c.id, i.id, f) })
+        val myNotes = Notes.markdown(c, repo.notes.value).takeIf { it.isNotEmpty() }?.let { PackText("${safeName(c.name)} - catatan saya.md", it) }
+        val texts = StudyPack.texts(c, fileText = { i, f -> repo.textOf(c.id, i.id, f) }) + listOfNotNull(myNotes)
         val files = c.items.flatMap { i -> i.files.map { f -> Triple(i, f, repo.isDownloaded(c.id, i.id, f)) } }
         val pdfs = files.filter { it.third && FileText.isPdf(it.second.name, it.second.mime) }.map { repo.fileOf(c.id, it.first.id, it.second) }
         val other = files.count { it.third && !FileText.isPdf(it.second.name, it.second.mime) }

@@ -48,10 +48,43 @@ class Repo private constructor(ctx: Context) {
         val tmp = File(cardsFile.path + ".tmp"); tmp.writeText(list.toJsonArray().toString())
         if (!tmp.renameTo(cardsFile)) throw IOException("Gagal menyimpan kartu")
         _cards.value = list
+        DeadlineWidget.refresh(app)
     }
     fun addCards(new: List<Card>) = saveCards(_cards.value + new)
     fun updateCard(c: Card) = saveCards(_cards.value.map { if (it.id == c.id) c else it })
     fun deleteCard(id: String) = saveCards(_cards.value.filter { it.id != id })
+
+    // ---------- catatan & sorotan (lokal) ----------
+    private val notesFile = File(app.filesDir, "notes.json")
+    /** Baca per catatan: satu entri rusak tidak boleh membuang semuanya; berkas yang tidak terbaca dipindah ke .corrupt (bukan ditimpa). */
+    private fun loadNotes(): List<Note> {
+        if (!notesFile.isFile) return emptyList()
+        return try {
+            val a = org.json.JSONArray(notesFile.readText())
+            (0 until a.length()).mapNotNull { runCatching { a.getJSONObject(it).toNote() }.getOrNull() }
+        } catch (e: Exception) { runCatching { notesFile.renameTo(File(notesFile.path + ".corrupt")) }; emptyList() }
+    }
+    private val _notes = MutableStateFlow(loadNotes())
+    val notes: StateFlow<List<Note>> = _notes
+    private fun saveNotes(list: List<Note>) {
+        val tmp = File(notesFile.path + ".tmp"); tmp.writeText(list.toJsonArray().toString())
+        if (!tmp.renameTo(notesFile)) throw IOException("Gagal menyimpan catatan")
+        _notes.value = list
+    }
+    fun addNote(n: Note) = saveNotes(_notes.value + n)
+    fun updateNote(n: Note) = saveNotes(_notes.value.map { if (it.id == n.id) n else it })
+    fun deleteNote(id: String) = saveNotes(_notes.value.filter { it.id != id })
+
+    // ---------- rencana belajar (pengaturan) ----------
+    var planReminder: Boolean
+        get() = prefs.getBoolean("plan_reminder", false)
+        set(v) = prefs.edit().putBoolean("plan_reminder", v).apply()
+    var planMinutes: Int
+        get() = prefs.getInt("plan_minutes", Planner.DEFAULT_DAILY).coerceIn(15, 480)
+        set(v) = prefs.edit().putInt("plan_minutes", v.coerceIn(15, 480)).apply()
+    var planHour: Int
+        get() = prefs.getInt("plan_hour", Planner.DEFAULT_HOUR).coerceIn(0, 23)
+        set(v) = prefs.edit().putInt("plan_hour", v.coerceIn(0, 23)).apply()
 
     // ---------- tugas yang ditandai selesai (lokal) & tampilan ----------
     private val _done = MutableStateFlow(prefs.getStringSet("done_assign", emptySet())!!.mapNotNull { it.toLongOrNull() }.toSet())
@@ -59,6 +92,7 @@ class Repo private constructor(ctx: Context) {
     fun setAssignmentDone(id: Long, done: Boolean) {
         val n = if (done) _done.value + id else _done.value - id
         prefs.edit().putStringSet("done_assign", n.map { it.toString() }.toSet()).apply(); _done.value = n
+        DeadlineWidget.refresh(app)
     }
     private val _theme = MutableStateFlow(runCatching { ThemeMode.valueOf(prefs.getString("theme", "SYSTEM")!!) }.getOrDefault(ThemeMode.SYSTEM))
     val theme: StateFlow<ThemeMode> = _theme
@@ -100,10 +134,11 @@ class Repo private constructor(ctx: Context) {
         prefs.edit().clear().apply()
         runCatching { SecretStore.remove(app, "site") }
         _done.value = emptySet()
-        snapFile.delete(); cardsFile.delete(); _cards.value = emptyList(); root.deleteRecursively()
+        snapFile.delete(); cardsFile.delete(); _cards.value = emptyList(); notesFile.delete(); _notes.value = emptyList(); root.deleteRecursively()
         File(app.filesDir, "chats").deleteRecursively()        // riwayat chat memuat isi materi kursus
         app.getSharedPreferences("reminded", Context.MODE_PRIVATE).edit().clear().apply()
         _site.value = null; _snapshot.value = null; bump()
+        DeadlineWidget.refresh(app)
     }
 
     // ---------- SSO yang sedang berjalan ----------
@@ -128,6 +163,7 @@ class Repo private constructor(ctx: Context) {
         tmp.writeText(s.toJson().toString())
         if (!tmp.renameTo(snapFile)) throw IOException("Gagal menyimpan data kursus")
         _snapshot.value = s
+        DeadlineWidget.refresh(app)
         // file yang berubah di Moodle (modified baru) dianggap belum diunduh lagi; dihitung di isDownloaded()
         bump()
     }

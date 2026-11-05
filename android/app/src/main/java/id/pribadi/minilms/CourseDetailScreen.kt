@@ -7,6 +7,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.*
 import androidx.compose.material3.*
@@ -31,13 +32,15 @@ fun CourseDetailScreen(vm: MainViewModel, c: Course, st: Repo.CourseStats, onBac
     val progress by vm.fileProgress.collectAsStateWithLifecycle()
     val done by vm.doneAssignments.collectAsStateWithLifecycle()
     val pack by vm.pack.collectAsStateWithLifecycle()
+    val allNotes by vm.notes.collectAsStateWithLifecycle()
     val zip = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/zip")) { uri -> if (uri != null) vm.exportZip(c, uri) }
     val nowSec by rememberNowSec(tick)
     CourseDetailContent(c, st, nowSec, done, dl, progress,
         isDownloaded = { i, f -> tick >= 0 && vm.repo.isDownloaded(c.id, i.id, f) }, fileKey = { i, f -> vm.repo.fileKey(c.id, i.id, f) },
         onBack = onBack, onDownloadCourse = { vm.downloadCourse(c.id) }, onPause = vm::pause, onDeleteDownloads = { vm.deleteDownloads(c.id) },
         onOpenFile = { i, f -> vm.open(c, i, f) }, onDownloadFile = { i, f -> vm.downloadFile(c, i, f) }, onLink = vm::openInApp, onOpenMoodle = vm::openMoodle, onYoutube = vm::openYoutubeApp, onToggleDone = vm::toggleDone,
-        onAskAi = onAskAi, onExportZip = { zip.launch("${safeName(c.name)}.zip") }, onShareNotebook = { vm.preparePack(c) }, onOpenWeb = vm::openWeb, pack = pack, onSharePack = { vm.sharePack(c) }, onClosePack = vm::closePack)
+        onAskAi = onAskAi, onExportZip = { zip.launch("${safeName(c.name)}.zip") }, onShareNotebook = { vm.preparePack(c) }, onOpenWeb = vm::openWeb, pack = pack, onSharePack = { vm.sharePack(c) }, onClosePack = vm::closePack,
+        notes = allNotes.filter { it.courseId == c.id }, onAddNote = { i, q, t -> vm.addNote(c.id, i.id, q, t) }, onDeleteNote = vm::deleteNote, onShareNotes = { vm.shareNotes(c) })
 }
 
 private enum class DetailTab(val label: String) { MATERI("Materi"), TUGAS("Tugas"), NILAI("Nilai") }
@@ -50,6 +53,7 @@ fun CourseDetailContent(
     onOpenFile: (Item, FileRef) -> Unit, onDownloadFile: (Item, FileRef) -> Unit, onLink: (String) -> Unit, onOpenMoodle: (String) -> Unit, onYoutube: (String) -> Unit = {}, onToggleDone: (Long) -> Unit,
     onAskAi: (AiMode) -> Unit, onExportZip: () -> Unit, onShareNotebook: () -> Unit, onOpenWeb: (String) -> Unit,
     pack: MainViewModel.PackSummary? = null, onSharePack: () -> Unit = {}, onClosePack: () -> Unit = {},
+    notes: List<Note> = emptyList(), onAddNote: (Item, String, String) -> Unit = { _, _, _ -> }, onDeleteNote: (String) -> Unit = {}, onShareNotes: () -> Unit = {},
 ) {
     var tab by rememberSaveable { mutableStateOf(DetailTab.MATERI) }
     val materials = remember(c) { c.items.filter { !it.isTask } }
@@ -61,6 +65,7 @@ fun CourseDetailContent(
     var menu by remember { mutableStateOf(false) }
     var confirmDelete by remember { mutableStateOf(false) }
     var packDialog by remember { mutableStateOf(false) }
+    var noteFor by remember { mutableStateOf<Item?>(null) }
 
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 32.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item {
@@ -72,6 +77,7 @@ fun CourseDetailContent(
                         DropdownMenu(menu, { menu = false }) {
                             DropdownMenuItem({ Text("Ekspor sebagai ZIP") }, { menu = false; onExportZip() }, leadingIcon = { Icon(Icons.Rounded.FolderZip, null) })
                             DropdownMenuItem({ Text("Paket belajar (podcast, bahan ajar)") }, { menu = false; packDialog = true; onShareNotebook() }, leadingIcon = { Icon(Icons.Rounded.Share, null) })
+                            if (notes.isNotEmpty()) DropdownMenuItem({ Text("Bagikan catatan saya (${notes.size})") }, { menu = false; onShareNotes() }, leadingIcon = { Icon(Icons.Rounded.EditNote, null) })
                             DropdownMenuItem({ Text("Buka Claude (login SSO)") }, { menu = false; onOpenWeb("https://claude.ai") }, leadingIcon = { Icon(Icons.Rounded.OpenInNew, null) })
                             DropdownMenuItem({ Text("Buka Gemini (login Google)") }, { menu = false; onOpenWeb("https://gemini.google.com") }, leadingIcon = { Icon(Icons.Rounded.OpenInNew, null) })
                             DropdownMenuItem({ Text("Buka NotebookLM") }, { menu = false; onOpenWeb("https://notebooklm.google.com") }, leadingIcon = { Icon(Icons.Rounded.OpenInNew, null) })
@@ -137,16 +143,17 @@ fun CourseDetailContent(
                             Icon(if (open) Icons.Rounded.ExpandLess else Icons.Rounded.ExpandMore, null, tint = MaterialTheme.colorScheme.outline)
                         }
                     }
-                    if (open) items(list.size, key = { "m_${list[it].id}" }) { idx -> MaterialCard(list[idx], isDownloaded, fileKey, fileProgress, onOpenFile, onDownloadFile, onLink, onOpenMoodle, onYoutube) }
+                    if (open) items(list.size, key = { "m_${list[it].id}" }) { idx -> MaterialCard(list[idx], isDownloaded, fileKey, fileProgress, onOpenFile, onDownloadFile, onLink, onOpenMoodle, onYoutube, notes.filter { n -> n.itemId == list[idx].id }, { noteFor = list[idx] }, onDeleteNote) }
                 }
             }
             DetailTab.TUGAS -> {
                 if (tasks.isEmpty()) item { EmptyState(Icons.Rounded.Assignment, "Tidak ada tugas", "Kursus ini tidak punya tugas yang terlihat.") }
-                items(tasks.size, key = { "t_${tasks[it].id}" }) { TaskCard(tasks[it], tasks[it].id in doneIds, nowSec, onOpenMoodle) { onToggleDone(tasks[it].id) } }
+                items(tasks.size, key = { "t_${tasks[it].id}" }) { TaskCard(tasks[it], tasks[it].id in doneIds, nowSec, onOpenMoodle, notes.filter { n -> n.itemId == tasks[it].id }, { noteFor = tasks[it] }, onDeleteNote) { onToggleDone(tasks[it].id) } }
             }
             DetailTab.NILAI -> item { GradesPane(c, summary) }
         }
     }
+    noteFor?.let { i -> NoteDialog(i.title, "", "", { q, t -> onAddNote(i, q, t); noteFor = null }, { noteFor = null }) }
     if (packDialog) PackDialog(pack, onShare = { packDialog = false; onSharePack() }, onNotebook = { onOpenWeb("https://notebooklm.google.com") }, onDismiss = { packDialog = false; onClosePack() })
     if (confirmDelete) AlertDialog({ confirmDelete = false }, title = { Text("Hapus unduhan kursus ini?") },
         text = { Text("${st.downloaded} file (${Logic.fmtSize(st.downloadedBytes)}) dihapus dari ponsel. Anda bisa mengunduhnya lagi kapan saja.") },
@@ -165,7 +172,8 @@ private fun AiChip(icon: androidx.compose.ui.graphics.vector.ImageVector, label:
 
 @Composable
 private fun MaterialCard(it: Item, isDownloaded: (Item, FileRef) -> Boolean, fileKey: (Item, FileRef) -> String, progress: Map<String, Float>,
-                         onOpenFile: (Item, FileRef) -> Unit, onDownloadFile: (Item, FileRef) -> Unit, onLink: (String) -> Unit, onOpenMoodle: (String) -> Unit, onYoutube: (String) -> Unit) {
+                         onOpenFile: (Item, FileRef) -> Unit, onDownloadFile: (Item, FileRef) -> Unit, onLink: (String) -> Unit, onOpenMoodle: (String) -> Unit, onYoutube: (String) -> Unit,
+                         notes: List<Note>, onNote: () -> Unit, onDeleteNote: (String) -> Unit) {
     var open by rememberSaveable(it.id) { mutableStateOf(false) }
     val cs = MaterialTheme.colorScheme
     val hasText = (it.type == "page" || it.type == "forum") && it.content.isNotBlank()
@@ -182,13 +190,15 @@ private fun MaterialCard(it: Item, isDownloaded: (Item, FileRef) -> Boolean, fil
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 IconBadge(when (it.type) { "page" -> Icons.Rounded.Article; "forum" -> Icons.Rounded.Forum; else -> Icons.Rounded.Link }, if (it.type == "page" || it.type == "forum") cs.tertiary else cs.primary, size = 36.dp)
                 Text(it.title, Modifier.weight(1f), style = MaterialTheme.typography.titleSmall, maxLines = 3, overflow = TextOverflow.Ellipsis)
+                IconButton(onNote, Modifier.size(36.dp)) { Icon(Icons.Rounded.EditNote, "Tambah catatan", tint = if (notes.isNotEmpty()) cs.tertiary else cs.outline) }
                 if (hasText) Icon(if (open) Icons.Rounded.ExpandLess else Icons.Rounded.ExpandMore, null, tint = cs.outline)
                 else if (target != null) Icon(Icons.Rounded.OpenInNew, "Buka di aplikasi", tint = cs.primary)
             }
             if (hasText) {
-                if (open) Text(it.content, style = MaterialTheme.typography.bodyMedium, color = cs.onSurface)
+                if (open) SelectionContainer { Text(highlighted(it.content, notes.map { n -> n.quote }.filter { q -> q.isNotEmpty() }), style = MaterialTheme.typography.bodyMedium, color = cs.onSurface) }
                 else Text(it.content, style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant, maxLines = 2, overflow = TextOverflow.Ellipsis)
             }
+            ItemNotes(notes, onDeleteNote)
             it.files.forEach { f -> FileRow(it, f, isDownloaded(it, f), progress[fileKey(it, f)], onOpenFile, onDownloadFile) }
             if (it.type == "link" && it.files.isEmpty() && WebPolicy.isYoutube(it.content))
                 OutlinedButton({ onYoutube(it.content) }, Modifier.fillMaxWidth()) { Icon(Icons.Rounded.PlayCircle, null, Modifier.size(18.dp)); Spacer(Modifier.width(8.dp)); Text("Buka di YouTube (unduh resmi di sana)") }
@@ -216,7 +226,7 @@ private fun FileRow(i: Item, f: FileRef, downloaded: Boolean, progress: Float?, 
 }
 
 @Composable
-private fun TaskCard(it: Item, done: Boolean, nowSec: Long, onOpenMoodle: (String) -> Unit, onToggle: () -> Unit) {
+private fun TaskCard(it: Item, done: Boolean, nowSec: Long, onOpenMoodle: (String) -> Unit, notes: List<Note>, onNote: () -> Unit, onDeleteNote: (String) -> Unit, onToggle: () -> Unit) {
     var open by rememberSaveable(it.id) { mutableStateOf(false) }
     val cs = MaterialTheme.colorScheme
     val due = it.dueAt
@@ -233,10 +243,12 @@ private fun TaskCard(it: Item, done: Boolean, nowSec: Long, onOpenMoodle: (Strin
                     }
                 }
                 if (it.type == "quiz") Pill("Tes", cs.tertiaryContainer, cs.onTertiaryContainer, Icons.Rounded.Quiz)
+                IconButton(onNote, Modifier.size(40.dp)) { Icon(Icons.Rounded.EditNote, "Tambah catatan", tint = if (notes.isNotEmpty()) cs.tertiary else cs.outline) }
                 IconButton(onToggle) { Icon(if (done) Icons.Rounded.CheckCircle else Icons.Rounded.RadioButtonUnchecked, if (done) "Tandai belum selesai" else "Tandai selesai", tint = if (done) cs.secondary else cs.outline) }
             }
             if (open) {
-                if (it.content.isNotBlank()) Text(it.content, Modifier.padding(end = 10.dp), style = MaterialTheme.typography.bodyMedium)
+                if (it.content.isNotBlank()) SelectionContainer { Text(highlighted(it.content, notes.map { n -> n.quote }.filter { q -> q.isNotEmpty() }), Modifier.padding(end = 10.dp), style = MaterialTheme.typography.bodyMedium) }
+                ItemNotes(notes, onDeleteNote, Modifier.padding(end = 10.dp))
                 Text(if (it.type == "quiz") "Tes dikerjakan online di Moodle; info jadwal tersimpan untuk offline." else "Kumpulkan dan lihat nilai di Moodle kampus.", Modifier.padding(end = 10.dp), style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant)
                 it.attempts.forEach { a ->
                     val stateLabel = when (a.state) { "finished" -> "Selesai"; "inprogress" -> "Sedang berjalan"; "overdue" -> "Lewat waktu"; "abandoned" -> "Ditinggalkan"; else -> a.state }

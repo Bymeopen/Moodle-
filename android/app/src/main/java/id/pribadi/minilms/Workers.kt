@@ -21,11 +21,13 @@ import java.util.concurrent.TimeUnit
 object Notif {
     const val CH_DOWNLOAD = "downloads"
     const val CH_DEADLINE = "deadlines"
+    const val CH_PLAN = "plan"
 
     fun ensureChannels(ctx: Context) {
         val m = ctx.getSystemService(NotificationManager::class.java)
         m.createNotificationChannel(NotificationChannel(CH_DOWNLOAD, "Unduhan materi", NotificationManager.IMPORTANCE_LOW))
         m.createNotificationChannel(NotificationChannel(CH_DEADLINE, "Pengingat tenggat tugas", NotificationManager.IMPORTANCE_DEFAULT))
+        m.createNotificationChannel(NotificationChannel(CH_PLAN, "Rencana belajar harian", NotificationManager.IMPORTANCE_DEFAULT))
     }
 
     fun canPost(ctx: Context) = Build.VERSION.SDK_INT < 33 ||
@@ -109,6 +111,25 @@ class ReminderWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(c
     }
 }
 
+/** Harian pada jam pilihan: ringkasan rencana belajar hari ini (tugas yang dikerjakan + kartu hafalan jatuh tempo). Murni lokal, tanpa sinkron. */
+class StudyPlanWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx, params) {
+    override suspend fun doWork(): Result = withContext(Dispatchers.IO) {
+        val repo = Repo.get(applicationContext)
+        DeadlineWidget.refresh(applicationContext)                                   // widget ikut disegarkan tiap hari (tenggat bergeser)
+        if (repo.site.value == null || !repo.planReminder || !Notif.canPost(applicationContext)) return@withContext Result.success()
+        val now = System.currentTimeMillis() / 1000
+        val dueCards = repo.cards.value.count { Srs.isDue(it) }
+        val tasks = Planner.tasksOf(repo.snapshot.value?.courses.orEmpty(), repo.doneAssignments.value, now)
+        val msg = Planner.todayMessage(Planner.plan(tasks, now, repo.planMinutes, dueCards), dueCards) ?: return@withContext Result.success()
+        Notif.ensureChannels(applicationContext)
+        val n = NotificationCompat.Builder(applicationContext, Notif.CH_PLAN).setSmallIcon(android.R.drawable.ic_popup_reminder)
+            .setContentTitle(msg.first).setContentText(msg.second).setStyle(NotificationCompat.BigTextStyle().bigText(msg.second))
+            .setAutoCancel(true).setContentIntent(OpenTarget.pending(applicationContext, OpenTarget.PLAN, 20)).build()
+        NotificationManagerCompat.from(applicationContext).notify(7001, n)
+        Result.success()
+    }
+}
+
 object Jobs {
     private const val DL = "download"
     fun download(ctx: Context, courseId: Long? = null) {
@@ -121,6 +142,15 @@ object Jobs {
     }
     fun pause(ctx: Context) { WorkManager.getInstance(ctx).cancelUniqueWork(DL) }
     fun name() = DL
+
+    /** Jadwalkan (atau batalkan) notifikasi rencana belajar harian pada [hour]; mengganti jadwal lama bila jam berubah. */
+    fun schedulePlan(ctx: Context, enabled: Boolean, hour: Int) {
+        val wm = WorkManager.getInstance(ctx)
+        if (!enabled) { wm.cancelUniqueWork("studyplan"); return }
+        val delay = Planner.secondsUntilHour(hour, System.currentTimeMillis() / 1000)
+        val req = PeriodicWorkRequestBuilder<StudyPlanWorker>(24, TimeUnit.HOURS).setInitialDelay(delay, TimeUnit.SECONDS).build()
+        wm.enqueueUniquePeriodicWork("studyplan", ExistingPeriodicWorkPolicy.UPDATE, req)
+    }
 
     fun scheduleReminders(ctx: Context, enabled: Boolean) {
         val wm = WorkManager.getInstance(ctx)
